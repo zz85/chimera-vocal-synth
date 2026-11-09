@@ -12,7 +12,8 @@ if (!scorePath || !outputPath || !process.env.CHIMERA_TS_ENGINE) {
 const score = JSON.parse(readFileSync(scorePath, 'utf8'));
 const ffmpeg = process.env.FFMPEG || 'ffmpeg';
 const state = await createVoice(resolve(process.env.CHIMERA_TS_ENGINE), score);
-const count = Math.ceil(state.duration * fps), samplesPerFrame = sampleRate / fps;
+// a score's "duration" (s) keeps the video going past the last word, for an instrumental ending
+const count = Math.ceil(Math.max(state.duration, score.duration ?? 0) * fps), samplesPerFrame = sampleRate / fps;
 const samples = new Float32Array(count * samplesPerFrame);
 const picture = createPicture(state.model, score, state.captions, count / fps);
 const parent = dirname(resolve(outputPath)); mkdirSync(parent, { recursive: true });

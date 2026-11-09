@@ -3,6 +3,7 @@ import { gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { hasKana, japaneseSyllables } from './japanese.mjs';
 
 export const sampleRate = 48000;
 export const fps = 25;
@@ -36,7 +37,9 @@ export async function createVoice(engineDirectory, score) {
       const start = batch[0].start;
       if (line.sung) {
         const notes = batch.flatMap(w => {
-          const syllables = lyricsToSyllables(w.pronunciation ?? w.text, dictionary);
+          const said = w.pronunciation ?? w.text;
+          // Japanese words are kana, one mora per note; everything else goes through the English dictionary
+          const syllables = w.lang === 'ja' || hasKana(said) ? japaneseSyllables(said, w.notes.length) : lyricsToSyllables(said, dictionary);
           if (syllables.length !== w.notes.length) throw new Error('Syllable/note mismatch for ' + w.text);
           const beats = w.notes.reduce((sum, n) => sum + n[1], 0);
           if (!Number.isFinite(beats) || beats <= 0) throw new Error('Invalid note weights.');
