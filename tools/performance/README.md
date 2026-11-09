@@ -13,7 +13,7 @@ export CHIMERA_TS_ENGINE="$(cd ../chimera-performance-engine && pwd)"
 bun tools/performance/render.mjs tools/performance/example.json out/example.mp4
 ```
 
-Set `FFMPEG` to the executable's path when it is outside your shell's search path. To mix in a backing track aligned to time zero, append its path, e.g. `bun tools/performance/render.mjs score.json out/take.mp4 backing.wav`. The exporter mixes it beneath the synthesized voice: `BACKING_GAIN` sets the track's level (0.27 by default), and `VOICE_ROOM=1` adds a short echo to the voice so it sits in the same room as the track. Each render uses its own temporary directory and replaces the output once both encoding steps succeed.
+Set `FFMPEG` to the executable's path when it is outside your shell's search path. To mix in a backing track aligned to time zero, append its path, e.g. `bun tools/performance/render.mjs score.json out/take.mp4 backing.wav`. The exporter mixes it beneath the synthesized voice: `BACKING_GAIN` sets the track's level (0.27 by default), and `VOICE_GAIN` sets the voice's level (1 by default), and `VOICE_ROOM=1` adds a short echo to the voice so it sits in the same room as the track. Each render uses its own temporary directory and replaces the output once both encoding steps succeed.
 
 ## Score a passage
 
