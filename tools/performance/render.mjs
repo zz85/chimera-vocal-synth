@@ -47,7 +47,7 @@ try {
   const wav = join(tmp,'voice.wav'), movie = join(tmp,'final.mp4');
   state.writeWav(wav, [samples], sampleRate);
   const args = ['-nostdin','-v','error','-i',join(tmp,'silent.mp4'),'-i',wav];
-  if (backingPath) args.push('-i',resolve(backingPath),'-filter_complex','[2:a]volume=0.27[bed];[1:a][bed]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:level=false[a]','-map','[a]');
+  if (backingPath) args.push('-i',resolve(backingPath),'-filter_complex',`[2:a]volume=${process.env.BACKING_GAIN ?? 0.27}[bed];[1:a]${process.env.VOICE_ROOM ? 'aecho=1:0.85:43|71|97:0.22|0.16|0.11,' : ''}anull[v];[v][bed]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:level=false[a]`,'-map','[a]');
   else args.push('-map','1:a:0');
   args.push('-map','0:v:0','-c:v','copy','-c:a','aac','-b:a','192k','-movflags','+faststart',movie);
   const mux = spawnSync(ffmpeg,args,{stdio:'inherit'});

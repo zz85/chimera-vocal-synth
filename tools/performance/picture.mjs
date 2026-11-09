@@ -76,7 +76,10 @@ export function createPicture(model, score, captions, duration) {
     }
     out.drawImage(tract, 11, 68);
     text('CHIMERA   /   VOCAL SYNTHESIZER', 585, 44, 16, colors.green, 'monospace');
-    text(score.title, 583, 140, 82, colors.ink, 'serif');
+    // shrink a long title to fit the panel (583 to 1235 px)
+    out.font = '82px serif';
+    const titleSize = Math.min(82, Math.floor(82 * 652 / out.measureText(score.title).width));
+    text(score.title, 583, 140, titleSize, colors.ink, 'serif');
     text(score.credit ?? '', 587, 174, 17, colors.dim);
     out.fillStyle = colors.rule; out.fillRect(585, 199, 650, 1);
     const line = score.lines[lineIndex];
