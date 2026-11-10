@@ -268,3 +268,79 @@
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
+.k-search {
+  width: 100%;
+  padding: 6px 8px;
+  background: #000;
+  color: var(--white);
+  border: 1px solid var(--blue-mid);
+  font: inherit;
+  font-size: 12px;
+}
+.k-search-opts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--blue-mid);
+}
+.k-list button.lakh .k-name {
+  color: var(--blue-mid);
+}
+.k-list button.lakh:hover .k-name,
+.k-list button.lakh.on .k-name {
+  color: var(--white);
+}
+.k-dur {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--blue-dim);
+  font-variant-numeric: tabular-nums;
+}
+button.k-find {
+  width: 100%;
+  background: none;
+}
+button.k-find:disabled {
+  opacity: 0.6;
+}
+.k-found {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow: auto;
+}
+.k-found button {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--blue);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.k-found button.on {
+  border-color: var(--amber);
+  color: var(--white);
+}
+.k-score {
+  flex: none;
+  width: 34px;
+  color: var(--blue-dim);
+  font-variant-numeric: tabular-nums;
+}
+.k-score.ok {
+  color: var(--amber);
+}
+.k-score.good {
+  color: var(--green);
+}

@@ -21,6 +21,7 @@ import { planPart, type Phrase } from "./plan.ts";
 import { KaraokePlayer, SOUNDFONTS } from "./player.ts";
 import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
 import { align, applyAlignment, nudgeRatio, rescore, type Alignment } from "./align.ts";
+import { loadLakh, searchLakh, lakhPath, titleWords, type LakhRow } from "./lakh.ts";
 import "./karaoke.css";
 
 const AnatomyView3D = lazy(() => import("../ui/components/AnatomyView3D.tsx").then((m) => ({ default: m.AnatomyView3D })));
@@ -45,10 +46,31 @@ interface Entry {
   error?: string;
   /** a dropped file's bytes (songs from the list are fetched) */
   bytes?: Uint8Array;
+  /** the name shown, where the file's own isn't one (a Lakh file is named by its hash) */
+  label?: string;
+  /** the badge shown, where the extension doesn't tell it */
+  badge?: string;
 }
+
+const entryName = (e: Entry) => e.label ?? e.file.replace(/\.[^.]+$/, "");
+const entryBadge = (e: Entry) => e.badge ?? (/\.txt$/i.test(e.file) ? "US" : /\.kar$/i.test(e.file) ? "KAR" : "MIDI");
+const lakhEntry = (r: LakhRow): Entry => ({ file: lakhPath(r.md5), label: r.name, badge: r.lyrics ? "KAR" : "MIDI", song: null });
 
 /** a file name as a URL path (Vite's file server doesn't decode %26 or %5B, so those stay as they are) */
 const fileUrl = (name: string) => encodeURI(name).replace(/#/g, "%23").replace(/\?/g, "%3F");
+
+/** a Lakh file tried as a song's backing, with how well it lined up (-1: it couldn't be read) */
+interface Found {
+  row: LakhRow;
+  bytes?: Uint8Array;
+  score: number;
+}
+interface Finder {
+  state: "running" | "done";
+  found: Found[];
+  total?: number;
+  note?: string;
+}
 
 /** a MIDI file lined up under an UltraStar song */
 interface Overlay {
@@ -70,6 +92,8 @@ interface SavedOverlay {
   muteMelody: boolean;
   /** follow the recording's tempo changes (the auto warp) */
   warp: boolean;
+  /** the MIDI's name, where its file doesn't give one (Lakh) */
+  name?: string;
 }
 const savedKey = (song: Song) => `chimera-karaoke:overlay:${song.id}`;
 
@@ -106,6 +130,35 @@ export function KaraokePage() {
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [aligning, setAligning] = useState<string | null>(null);
   const shiftRef = useRef(false);
+  /** names of MIDI files whose path doesn't give one (Lakh), by path */
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [lakh, setLakh] = useState<LakhRow[] | null>(null);
+  const [lakhState, setLakhState] = useState<"idle" | "loading" | "ready" | "missing">("idle");
+  const [query, setQuery] = useState("");
+  const [lyricsOnly, setLyricsOnly] = useState(true);
+  const ensureLakh = useCallback(async (): Promise<LakhRow[] | null> => {
+    if (lakh) return lakh;
+    setLakhState("loading");
+    try {
+      const rows = await loadLakh(BASE);
+      setLakh(rows);
+      setLakhState("ready");
+      return rows;
+    } catch {
+      setLakhState("missing");
+      return null;
+    }
+  }, [lakh]);
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    const id = setTimeout(() => setQ(query), 150);
+    return () => clearTimeout(id);
+  }, [query]);
+  const results = useMemo(() => (lakh && q.trim().length >= 2 ? searchLakh(lakh, q, { lyricsOnly, limit: 200 }) : []), [lakh, q, lyricsOnly]);
+  const localHits = useMemo(() => {
+    const w = q.trim().toLowerCase();
+    return w ? entries.filter((e) => entryName(e).toLowerCase().includes(w)) : entries;
+  }, [entries, q]);
 
   // the player, the dictionary and the song list
   useEffect(() => {
@@ -145,12 +198,16 @@ export function KaraokePage() {
 
   // read a song when it's picked
   const open = useCallback(
-    async (file: string) => {
+    async (file: string, fresh?: Entry) => {
       player?.pause();
       setCurrent(file);
       setAudioName(null);
       player?.setAudio(null);
-      const e = entries.find((x) => x.file === file);
+      let e = entries.find((x) => x.file === file);
+      if (!e && fresh) {
+        e = fresh;
+        setEntries((list) => [fresh, ...list]);
+      }
       if (!e || e.song) return;
       try {
         let bytes = e.bytes;
@@ -160,7 +217,8 @@ export function KaraokePage() {
           if (!res.ok || /text\/html/.test(res.headers.get("content-type") ?? "")) throw new Error(`${file}: not found in public/shows/karaoke/`);
           bytes = new Uint8Array(await res.arrayBuffer());
         }
-        const s = parseSong(file, bytes);
+        // a Lakh file is read under its name (its title comes from it), as the MIDI it is
+        const s = parseSong(e.label ? `${e.label}.mid` : file, bytes);
         setEntries((list) => list.map((x) => (x.file === file ? { ...x, song: s } : x)));
       } catch (err) {
         setEntries((list) => list.map((x) => (x.file === file ? { ...x, error: err instanceof Error ? err.message : String(err) } : x)));
@@ -206,6 +264,7 @@ export function KaraokePage() {
     // what this browser kept, else the backing songs.json gives the song
     const file = saved?.file ?? entries.find((x) => x.song === song)?.backing;
     if (!file) return;
+    if (saved?.name) setNames((n) => ({ ...n, [file]: saved.name! }));
     const e = entries.find((x) => x.file === file);
     (e?.bytes ? Promise.resolve(e.bytes) : fetchBytes(file)).then((b) => attach(song, file, b, saved)).catch(() => {});
     // entries change as songs are read; only a new song restores
@@ -216,9 +275,9 @@ export function KaraokePage() {
   useEffect(() => {
     if (!song || !overlay) return;
     const a = overlay.align;
-    const v: SavedOverlay = { file: overlay.file, ratio: a.ratio, offset: a.offset, transpose: a.transpose, melody: a.melody, muteMelody: overlay.muteMelody, warp: !!a.warp };
+    const v: SavedOverlay = { file: overlay.file, ratio: a.ratio, offset: a.offset, transpose: a.transpose, melody: a.melody, muteMelody: overlay.muteMelody, warp: !!a.warp, name: names[overlay.file] };
     localStorage.setItem(savedKey(song), JSON.stringify(v));
-  }, [song, overlay]);
+  }, [song, overlay, names]);
 
   const placed = useMemo(() => (overlay ? applyAlignment(overlay.midi, overlay.align, overlay.muteMelody) : null), [overlay]);
   const backing = song?.backing ?? placed?.backing ?? null;
@@ -231,8 +290,48 @@ export function KaraokePage() {
     });
   const firstSung = song ? Math.min(...song.parts.map((p) => p.notes[0]?.t0 ?? Infinity)) : 0;
 
+  // a backing from Lakh: the files named like the song, each lined up and scored
+  const [finder, setFinder] = useState<Finder | null>(null);
+  useEffect(() => setFinder(null), [song]);
+  const findBacking = async (s: Song) => {
+    const rows = await ensureLakh();
+    if (!rows) {
+      setFinder({ state: "done", found: [], note: "No Lakh index next to the songs." });
+      return;
+    }
+    const title = titleWords(s.title);
+    let cands = searchLakh(rows, title, { prefer: [s.artist], limit: 12 });
+    // a title's "the" or a word spelled another way: try its longest words alone
+    if (!cands.length) cands = searchLakh(rows, title.split(/\s+/).sort((a, b) => b.length - a.length).slice(0, 2).join(" "), { prefer: [s.artist], limit: 12 });
+    const sung = s.parts.flatMap((p) => p.notes.map((n) => ({ t0: n.t0, midi: n.midi })));
+    const found: Found[] = [];
+    setFinder({ state: "running", found: [], total: cands.length });
+    for (const row of cands) {
+      try {
+        const bytes = await fetchBytes(lakhPath(row.md5));
+        // one alignment at a time, with a frame between so the page stays live
+        await new Promise((r) => setTimeout(r, 0));
+        const a = align(sung, parseMidi(bytes));
+        found.push({ row, bytes, score: a.score });
+      } catch {
+        found.push({ row, score: -1 });
+      }
+      found.sort((x, y) => y.score - x.score);
+      setFinder({ state: "running", found: [...found], total: cands.length });
+    }
+    setFinder({ state: "done", found, note: cands.length ? undefined : `Nothing in Lakh is named like "${title}".` });
+    const best = found[0];
+    if (best && best.score >= 0.35 && best.bytes) attachFound(s, best);
+  };
+  const attachFound = (s: Song, c: Found) => {
+    if (!c.bytes) return;
+    setNames((n) => ({ ...n, [lakhPath(c.row.md5)]: c.row.name }));
+    attach(s, lakhPath(c.row.md5), c.bytes, null);
+  };
+
   // each part's body and octave, from the song's own guess
   useEffect(() => {
+    (window as unknown as { __karaokeSong: Song | null }).__karaokeSong = song;
     if (!song) return;
     setSettings(song.parts.map((p) => ({ body: p.body, octave: autoOctave(p.notes, p.body), muted: false })));
   }, [song]);
@@ -353,17 +452,42 @@ export function KaraokePage() {
         <span className="duet-title">Karaoke{song ? ` · ${song.title}${song.artist ? " · " + song.artist : ""}` : ""}</span>
       </header>
       <aside className="k-songs">
-        <Screen title="Songs" sub={`${entries.length}`}>
+        <Screen title="Songs" sub={lakh ? `${entries.length} + ${lakh.length.toLocaleString()} Lakh` : `${entries.length}`}>
+          <input
+            className="k-search"
+            type="search"
+            placeholder="Search songs and the Lakh MIDIs…"
+            value={query}
+            onFocus={() => void ensureLakh()}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {q.trim().length >= 2 && (
+            <div className="k-search-opts">
+              <Toggle label="With lyrics only" checked={lyricsOnly} onChange={setLyricsOnly} />
+              <span>{lakhState === "loading" ? "loading the index…" : lakhState === "missing" ? "no Lakh index here" : `${results.length >= 200 ? "200+" : results.length} in Lakh`}</span>
+            </div>
+          )}
           <ul className="k-list">
-            {entries.map((e) => (
+            {localHits.map((e) => (
               <li key={e.file}>
-                <button className={e.file === current ? "on" : ""} onClick={() => void open(e.file)} title={e.error ?? e.file}>
-                  <span className="k-kind">{/\.txt$/i.test(e.file) ? "US" : /\.kar$/i.test(e.file) ? "KAR" : "MIDI"}</span>
-                  <span className="k-name">{e.file.replace(/\.[^.]+$/, "")}</span>
+                <button className={e.file === current ? "on" : ""} onClick={() => void open(e.file)} title={e.error ?? entryName(e)}>
+                  <span className="k-kind">{entryBadge(e)}</span>
+                  <span className="k-name">{entryName(e)}</span>
                   {e.error && <span className="k-err">!</span>}
                 </button>
               </li>
             ))}
+            {results
+              .filter((r) => !entries.some((e) => e.file === lakhPath(r.md5)))
+              .map((r) => (
+                <li key={r.md5}>
+                  <button className={`lakh${lakhPath(r.md5) === current ? " on" : ""}`} onClick={() => void open(lakhPath(r.md5), lakhEntry(r))} title={`${r.name} (${Math.floor(r.seconds / 60)}:${String(r.seconds % 60).padStart(2, "0")}${r.lyrics ? `, ${r.lyrics} lyric syllables` : ""})`}>
+                    <span className="k-kind">{r.lyrics ? "KAR" : "MIDI"}</span>
+                    <span className="k-name">{r.name}</span>
+                    <span className="k-dur">{Math.floor(r.seconds / 60)}:{String(r.seconds % 60).padStart(2, "0")}</span>
+                  </button>
+                </li>
+              ))}
           </ul>
           <label className="k-add">
             <input type="file" multiple accept=".txt,.kar,.mid,.midi,.mp3,.ogg,.m4a,.wav" onChange={(e) => e.target.files && void addFiles(e.target.files)} />
@@ -437,6 +561,7 @@ export function KaraokePage() {
                 overlay={overlay}
                 aligning={aligning}
                 midiFiles={entries.filter((e) => /\.(mid|midi|kar|rmi)$/i.test(e.file)).map((e) => e.file)}
+                names={names}
                 onPick={(file) => {
                   if (!file) {
                     setOverlay(null);
@@ -452,6 +577,9 @@ export function KaraokePage() {
                 onAuto={() => setOverlay((o) => (o ? { ...o, align: o.auto } : o))}
                 onMute={(m) => setOverlay((o) => (o ? { ...o, muteMelody: m } : o))}
                 onWarp={(w) => overlay && setAlign({ warp: w ? overlay.auto.warp : null })}
+                finder={finder}
+                onFind={() => void findBacking(song)}
+                onTry={(c) => (c.bytes ? attachFound(song, c) : void fetchBytes(lakhPath(c.row.md5)).then((b) => attachFound(song, { ...c, bytes: b })))}
               />
             )}
             {backing ? (
@@ -737,6 +865,10 @@ function OverlayPanel(props: {
   onAuto: () => void;
   onMute: (m: boolean) => void;
   onWarp: (on: boolean) => void;
+  names: Record<string, string>;
+  finder: Finder | null;
+  onFind: () => void;
+  onTry: (c: Found) => void;
 }) {
   const { overlay: o, aligning } = props;
   const a = o?.align;
@@ -747,8 +879,8 @@ function OverlayPanel(props: {
         <span>MIDI backing</span>
         <select value={aligning ?? o?.file ?? ""} onChange={(e) => props.onPick(e.target.value || null)}>
           <option value="">None</option>
-          {aligning && !props.midiFiles.includes(aligning) && <option value={aligning}>{aligning}</option>}
-          {o && o.file !== aligning && !props.midiFiles.includes(o.file) && <option value={o.file}>{o.file}</option>}
+          {aligning && !props.midiFiles.includes(aligning) && <option value={aligning}>{props.names[aligning] ?? aligning}</option>}
+          {o && o.file !== aligning && !props.midiFiles.includes(o.file) && <option value={o.file}>{props.names[o.file] ?? o.file}</option>}
           {props.midiFiles.map((f) => (
             <option key={f} value={f}>
               {f.replace(/\.[^.]+$/, "")}
@@ -760,7 +892,23 @@ function OverlayPanel(props: {
         <input type="file" accept=".mid,.midi,.kar,.rmi" onChange={(e) => e.target.files?.[0] && props.onFile(e.target.files[0])} />
         Load a MIDI…
       </label>
-      {aligning && <p className="k-hint">Lining up {aligning}…</p>}
+      <button className="k-add small k-find" disabled={props.finder?.state === "running"} onClick={props.onFind}>
+        {props.finder?.state === "running" ? `Trying Lakh MIDIs… ${props.finder.found.length}/${props.finder.total}` : "Find a backing in Lakh"}
+      </button>
+      {props.finder && (props.finder.found.length > 0 || props.finder.note) && (
+        <ul className="k-found">
+          {props.finder.note && <li className="k-hint">{props.finder.note}</li>}
+          {props.finder.found.map((c) => (
+            <li key={c.row.md5}>
+              <button className={o?.file === lakhPath(c.row.md5) ? "on" : ""} disabled={c.score < 0} onClick={() => props.onTry(c)} title={c.row.name}>
+                <span className={`k-score${c.score >= 0.5 ? " good" : c.score >= 0.3 ? " ok" : ""}`}>{c.score < 0 ? "–" : `${Math.round(c.score * 100)}%`}</span>
+                <span className="k-name">{c.row.name}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {aligning && <p className="k-hint">Lining up {props.names[aligning] ?? aligning}…</p>}
       {!o && !aligning && <p className="k-hint">Drop a .mid or .kar here to play it under this song, lined up to the singing. Shift-drop opens it as a song of its own.</p>}
       {o && a && !aligning && (
         <>

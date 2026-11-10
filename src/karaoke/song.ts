@@ -204,7 +204,10 @@ function melodyOf(m: MidiFile, lyrics: Lyric[]): { track: number; ch: number } |
       if (j < starts.length && Math.abs(starts[j] - l.t) <= 0.06) hit++;
     }
     const named = /melody|vocal|voice|lead vox|sing/i.test(m.trackNames[Number(k.split(":")[0])] ?? "") ? 1.15 : 1;
-    const score = (hit / lyrics.length) * named;
+    // an accompaniment that plays on every beat hits the lyrics too: a melody has about one
+    // note per syllable, so a much busier track counts for less
+    const busy = Math.min(1, (2 * lyrics.length) / starts.length);
+    const score = (hit / lyrics.length) * named * busy;
     if (score > bestScore) {
       bestScore = score;
       const [track, ch] = k.split(":").map(Number);
