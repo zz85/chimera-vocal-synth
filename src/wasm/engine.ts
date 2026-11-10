@@ -73,7 +73,7 @@ export class EnglishG2P {
   }
 
   /** Load the gzipped dictionary ("word\tPHONES" lines). */
-  load(url = "/data/cmudict.txt.gz"): Promise<void> {
+  load(url = `${import.meta.env.BASE_URL}data/cmudict.txt.gz`): Promise<void> {
     if (this.isLoaded) return Promise.resolve();
     if (this.loading) return this.loading;
     this.loading = (async () => {

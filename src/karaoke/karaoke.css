@@ -1,0 +1,247 @@
+/* the karaoke page (?karaoke): songs | heads, lyrics and roll | voice settings, over the transport */
+.karaoke {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 270px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "top top top" "songs main side" "bar bar bar";
+  gap: 8px;
+  height: 100vh;
+  height: 100dvh;
+  padding: 6px 16px max(10px, env(safe-area-inset-bottom));
+}
+.karaoke.dragging {
+  outline: 2px dashed var(--amber);
+  outline-offset: -6px;
+}
+.karaoke > .duet-top {
+  grid-area: top;
+}
+.k-songs {
+  grid-area: songs;
+  min-height: 0;
+  display: flex;
+}
+.k-side {
+  grid-area: side;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+}
+.k-songs > .screen,
+.k-side > .screen {
+  flex: 1;
+  min-height: 0;
+}
+.k-songs .screen-body,
+.k-side .screen-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px;
+  overflow: auto;
+}
+.k-main {
+  grid-area: main;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto 140px;
+  gap: 8px;
+}
+.k-bar {
+  grid-area: bar;
+}
+.k-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.k-list button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--blue);
+  cursor: pointer;
+  font-size: 12px;
+}
+.k-list button:hover {
+  border-color: var(--frame);
+}
+.k-list button.on {
+  border-color: var(--blue-mid);
+  color: var(--white);
+}
+.k-kind {
+  flex: none;
+  width: 34px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--blue-mid);
+}
+.k-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-err {
+  color: var(--amber);
+}
+.k-add {
+  display: block;
+  text-align: center;
+  padding: 7px;
+  border: 1px solid var(--frame);
+  color: var(--blue);
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.k-add input {
+  display: none;
+}
+.k-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--blue-mid);
+}
+.k-heads {
+  min-height: 0;
+}
+.k-heads:empty {
+  display: none;
+}
+.k-part {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-left: 3px solid var(--part);
+  background: rgba(19, 57, 84, 0.25);
+}
+.k-part-name {
+  color: var(--part);
+  font-size: 13px;
+}
+.k-octave {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--blue-mid);
+}
+.k-octave button {
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--frame);
+  background: none;
+  color: var(--blue);
+  cursor: pointer;
+}
+.k-octave output {
+  min-width: 22px;
+  text-align: center;
+  color: var(--white);
+  font-variant-numeric: tabular-nums;
+}
+.k-octave .toggle {
+  margin-left: auto;
+}
+.k-sep {
+  height: 1px;
+  background: var(--frame);
+}
+.k-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--blue-mid);
+}
+.k-select select {
+  min-width: 0;
+  max-width: 160px;
+  background: #000;
+  color: var(--blue);
+  border: 1px solid var(--frame);
+  padding: 3px;
+}
+.k-lyrics {
+  position: relative;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--frame);
+  text-align: center;
+}
+.k-countin {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  font-size: 20px;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+.k-line {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+  opacity: 0.55;
+  transition: opacity 0.2s, font-size 0.2s;
+}
+.k-line.active {
+  font-size: 26px;
+  opacity: 1;
+}
+.k-line.done {
+  opacity: 0.3;
+}
+.k-who {
+  margin-right: 10px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: var(--part);
+}
+.k-frag {
+  white-space: pre;
+  background: linear-gradient(90deg, var(--white) var(--fill), var(--part) var(--fill));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.k-roll {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--frame);
+  background: #000;
+}
+@media (max-width: 1000px) {
+  .karaoke {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "top" "songs" "main" "side" "bar";
+    height: auto;
+    min-height: 100dvh;
+  }
+  .k-songs .screen-body {
+    max-height: 180px;
+  }
+  .k-main {
+    grid-template-rows: 300px auto 120px;
+  }
+}

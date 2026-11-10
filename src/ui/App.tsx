@@ -26,6 +26,8 @@ import { bodyLabel, presetOf, PRESETS } from "./body.ts";
 const AnatomyView3D = lazy(() => import("./components/AnatomyView3D.tsx").then((m) => ({ default: m.AnatomyView3D })));
 // the duet page (`?show=<id>`): two 3D heads replaying a pre-rendered song
 const DuetPage = lazy(() => import("./components/DuetPage.tsx").then((m) => ({ default: m.DuetPage })));
+// the karaoke page (`?karaoke`): CHIMERA sings UltraStar, .kar and MIDI songs live
+const KaraokePage = lazy(() => import("../karaoke/KaraokePage.tsx").then((m) => ({ default: m.KaraokePage })));
 
 /** the show to play, from `?show=<id>` (a plain folder name under public/shows) */
 function showId(): string | null {
@@ -215,6 +217,12 @@ function PlayRight() {
 }
 
 export function App() {
+  if (new URLSearchParams(window.location.search).has("karaoke"))
+    return (
+      <Suspense fallback={null}>
+        <KaraokePage />
+      </Suspense>
+    );
   const show = showId();
   if (show)
     return (
