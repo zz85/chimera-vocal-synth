@@ -5,13 +5,16 @@
  *
  *   bun tools/karaoke/lakh-index.ts <lmd_full dir> <md5_to_paths.json> <out.tsv> [workers]
  *
- * Output lines: md5 \t name \t seconds \t lyric syllables \t notes. A worker mode (an extra
+ * Output lines: md5 \t name \t seconds \t lyric syllables \t notes \t quality (0-100) \t
+ * melody hit (% of lyrics a melody note sounds under) \t pitched instruments \t drums (0/1) \t
+ * the sung line's range (semitones, 5th to 95th percentile). A worker mode (an extra
  * "--shard i/n" argument) indexes every n-th file and prints its lines; the main run starts the
  * workers and joins their output.
  */
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseMidi } from "../../src/karaoke/midifile.ts";
+import { parseMidi, type MidiFile } from "../../src/karaoke/midifile.ts";
+import { parseMidiSong } from "../../src/karaoke/song.ts";
 
 const [dir, pathsFile, out, workersArg, shardArg, shard] = process.argv.slice(2);
 
@@ -51,6 +54,32 @@ function nameOf(paths: string[]): string {
   return best;
 }
 
+/**
+ * How good a file is to sing along with, 0..100: a karaoke file whose lyrics fall on a melody
+ * track that a voice can sing, over a full arrangement of a usual song's length, named
+ * "Artist - Title". A file without lyrics can only be scatted, and scores at most 45.
+ */
+export function quality(m: MidiFile, name: string, hit: number, span: number, lyrics: number): { q: number; instruments: number; drums: boolean } {
+  const pitched = new Set<string>();
+  let drums = false;
+  for (const n of m.notes) {
+    if (n.ch === 9) drums = true;
+    else pitched.add(`${n.track}:${n.ch}`);
+  }
+  const instruments = pitched.size;
+  const d = m.duration;
+  const length = d >= 90 && d <= 420 ? 1 : d >= 60 && d <= 600 ? 0.6 : 0.2;
+  const band = Math.min(1, Math.max(0, (instruments - 1) / 5)) * 0.75 + (drums ? 0.25 : 0);
+  const named = (/ - /.test(name) ? 0.6 : 0) + (/[a-z]/.test(name) && /[A-Z]/.test(name) ? 0.4 : 0);
+  let q = 20 * band + 10 * length + 10 * named;
+  if (lyrics) {
+    const perMin = lyrics / Math.max(1, d / 60);
+    const range = span <= 19 ? 1 : span <= 24 ? 0.6 : 0.2;
+    q += 40 * hit + 15 * range + 5 * (perMin >= 30 && perMin <= 260 ? 1 : 0.4);
+  } else q += 5;
+  return { q: Math.round(q), instruments, drums };
+}
+
 function indexOne(path: string, md5: string, paths: string[] | undefined): string | null {
   let m;
   try {
@@ -61,13 +90,28 @@ function indexOne(path: string, md5: string, paths: string[] | undefined): strin
   // karaoke lyrics: the track with the most lyric or text events, as the page reads them
   const counts = new Map<string, number>();
   for (const t of m.texts) if (!t.text.startsWith("@")) counts.set(`${t.track}:${t.kind}`, (counts.get(`${t.track}:${t.kind}`) ?? 0) + 1);
-  const lyrics = Math.max(0, ...counts.values());
+  let lyrics = Math.max(0, ...counts.values());
   const tags = m.texts.filter((t) => t.text.startsWith("@T")).map((t) => clean(t.text.slice(2))).filter(Boolean);
   let name = paths ? nameOf(paths) : "";
   if (tags.length >= 2 && !/ - /.test(name)) name = `${tags[1]} - ${tags[0]}`;
   if (!name) name = m.trackNames.find((x) => x && / - /.test(x)) ?? m.trackNames.find(Boolean) ?? md5;
   name = name.replace(/[\u0000-\u001f\u007f\ufffd]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || md5;
-  return [md5, name, Math.round(m.duration), lyrics >= 30 ? lyrics : 0, m.notes.length].join("\t");
+  if (lyrics < 30) lyrics = 0;
+  // the sung line as the page reads it: how much of it a melody carries, and its range
+  let hit = 0, span = 0;
+  if (lyrics) {
+    try {
+      const song = parseMidiSong(readFileSync(path), md5, name);
+      hit = song.melodyHit ?? 0;
+      const ps = song.parts[0].notes.map((n) => n.midi).sort((a, b) => a - b);
+      if (ps.length) span = ps[Math.floor(ps.length * 0.95)] - ps[Math.floor(ps.length * 0.05)];
+      if (song.kind !== "kar") lyrics = 0;
+    } catch {
+      hit = 0;
+    }
+  }
+  const { q, instruments, drums } = quality(m, name, hit, span, lyrics);
+  return [md5, name, Math.round(m.duration), lyrics, m.notes.length, q, Math.round(100 * hit), instruments, drums ? 1 : 0, span].join("\t");
 }
 
 function files(): { path: string; md5: string }[] {

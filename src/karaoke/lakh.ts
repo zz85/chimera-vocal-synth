@@ -1,7 +1,7 @@
 /**
  * The Lakh MIDI Dataset on the karaoke page: its index (tools/karaoke/lakh-index.ts writes it
  * to shows/karaoke/lakh-index.tsv, one line per file: md5, name, seconds, lyric syllables,
- * notes) and the files themselves under shows/karaoke/lakh/<first hex digit>/<md5>.mid.
+ * notes, quality and what it's made of) and the files themselves under shows/karaoke/lakh/<first hex digit>/<md5>.mid.
  * The index is fetched once, the first time it's searched.
  */
 
@@ -14,6 +14,13 @@ export interface LakhRow {
   /** karaoke lyric syllables in the file; 0: none */
   lyrics: number;
   notes: number;
+  /** how good the file is to sing along with, 0..100 (tools/karaoke/lakh-index.ts quality) */
+  quality: number;
+  /** share of its lyrics a melody note sounds under, in percent */
+  melodyHit: number;
+  /** pitched instruments, and whether it has drums */
+  instruments: number;
+  drums: boolean;
   /** the name folded for search: lower case, no accents, words split by single spaces */
   key: string;
 }
@@ -39,9 +46,11 @@ export function loadLakh(base: string): Promise<LakhRow[]> {
       const text = await res.text();
       const rows: LakhRow[] = [];
       for (const line of text.split("\n")) {
-        const [md5, name, s, l, n] = line.split("\t");
+        const [md5, name, s, l, n, q, h, i, d] = line.split("\t");
         if (!md5 || !name) continue;
-        rows.push({ md5, name, seconds: Number(s), lyrics: Number(l), notes: Number(n), key: fold(name) });
+        // an index from before the quality columns: lyrics alone stand for quality
+        const quality = q === undefined ? (Number(l) ? 60 : 30) : Number(q);
+        rows.push({ md5, name, seconds: Number(s), lyrics: Number(l), notes: Number(n), quality, melodyHit: Number(h ?? 0), instruments: Number(i ?? 0), drums: d === "1", key: fold(name) });
       }
       return rows;
     })();
@@ -53,8 +62,9 @@ export function loadLakh(base: string): Promise<LakhRow[]> {
 const atWord = (key: string, word: string) => (" " + key).includes(" " + word);
 
 /**
- * The rows holding every word of `q`, best first: more words at a word's start, then files with
- * lyrics, then named "Artist - Title", then shorter names.
+ * The rows holding every word of `q`, best first: by how well the name matches (each word at a
+ * word's start, more for a whole word, more again for the words together in order), then by the
+ * file's quality, which counts for up to as much as a matched word or two, so a clean karaoke file beats a slightly better-named rough one.
  */
 export function searchLakh(rows: LakhRow[], q: string, o: { lyricsOnly?: boolean; limit?: number; prefer?: string[] } = {}): LakhRow[] {
   const words = fold(q).split(" ").filter((w) => w.length > 0);
@@ -71,15 +81,28 @@ export function searchLakh(rows: LakhRow[], q: string, o: { lyricsOnly?: boolean
       }
     if (!ok) continue;
     let s = 0;
-    for (const w of words) if (atWord(r.key, w)) s += 2;
+    const padded = ` ${r.key} `;
+    for (const w of words) if (atWord(r.key, w)) s += padded.includes(` ${w} `) ? 3 : 2;
+    // the words together, in order, as the name has them
+    if (words.length > 1 && padded.includes(` ${words.join(" ")} `)) s += 3;
     for (const w of prefer) if (atWord(r.key, w)) s += 3;
-    if (r.lyrics) s += 1.5;
-    if (/ - /.test(r.name)) s += 0.5;
-    s -= r.key.length / 200;
+    s += r.quality / 25;
+    // the name holds little but the words asked for: the song itself, not a medley or a remix
+    s -= Math.max(0, r.key.length - words.join(" ").length - 25) / 60;
     hits.push({ r, s });
   }
   hits.sort((a, b) => b.s - a.s);
   return hits.slice(0, o.limit ?? 200).map((h) => h.r);
+}
+
+/** what the quality is made of, for a tooltip */
+export function qualityNote(r: LakhRow): string {
+  const parts = [`quality ${r.quality}`];
+  if (r.lyrics) parts.push(`melody under ${r.melodyHit}% of the lyrics`);
+  else parts.push("no lyrics");
+  if (r.instruments) parts.push(`${r.instruments} instrument${r.instruments === 1 ? "" : "s"}${r.drums ? " and drums" : ""}`);
+  parts.push(`${Math.floor(r.seconds / 60)}:${String(r.seconds % 60).padStart(2, "0")}`);
+  return parts.join(", ");
 }
 
 /** the words of a song's title worth searching for: no [DUET], (Live), feat. ... */

@@ -21,7 +21,7 @@ import { planPart, type Phrase } from "./plan.ts";
 import { KaraokePlayer, SOUNDFONTS } from "./player.ts";
 import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
 import { align, applyAlignment, nudgeRatio, rescore, type Alignment } from "./align.ts";
-import { loadLakh, searchLakh, lakhPath, titleWords, type LakhRow } from "./lakh.ts";
+import { loadLakh, searchLakh, lakhPath, titleWords, qualityNote, type LakhRow } from "./lakh.ts";
 import "./karaoke.css";
 
 const AnatomyView3D = lazy(() => import("../ui/components/AnatomyView3D.tsx").then((m) => ({ default: m.AnatomyView3D })));
@@ -481,10 +481,11 @@ export function KaraokePage() {
               .filter((r) => !entries.some((e) => e.file === lakhPath(r.md5)))
               .map((r) => (
                 <li key={r.md5}>
-                  <button className={`lakh${lakhPath(r.md5) === current ? " on" : ""}`} onClick={() => void open(lakhPath(r.md5), lakhEntry(r))} title={`${r.name} (${Math.floor(r.seconds / 60)}:${String(r.seconds % 60).padStart(2, "0")}${r.lyrics ? `, ${r.lyrics} lyric syllables` : ""})`}>
+                  <button className={`lakh${lakhPath(r.md5) === current ? " on" : ""}`} onClick={() => void open(lakhPath(r.md5), lakhEntry(r))} title={`${r.name}: ${qualityNote(r)}`}>
                     <span className="k-kind">{r.lyrics ? "KAR" : "MIDI"}</span>
                     <span className="k-name">{r.name}</span>
                     <span className="k-dur">{Math.floor(r.seconds / 60)}:{String(r.seconds % 60).padStart(2, "0")}</span>
+                    <QualityBar q={r.quality} />
                   </button>
                 </li>
               ))}
@@ -900,9 +901,10 @@ function OverlayPanel(props: {
           {props.finder.note && <li className="k-hint">{props.finder.note}</li>}
           {props.finder.found.map((c) => (
             <li key={c.row.md5}>
-              <button className={o?.file === lakhPath(c.row.md5) ? "on" : ""} disabled={c.score < 0} onClick={() => props.onTry(c)} title={c.row.name}>
+              <button className={o?.file === lakhPath(c.row.md5) ? "on" : ""} disabled={c.score < 0} onClick={() => props.onTry(c)} title={`${c.row.name}: lines up with ${Math.round(c.score * 100)}% of the singing; ${qualityNote(c.row)}`}>
                 <span className={`k-score${c.score >= 0.5 ? " good" : c.score >= 0.3 ? " ok" : ""}`}>{c.score < 0 ? "–" : `${Math.round(c.score * 100)}%`}</span>
                 <span className="k-name">{c.row.name}</span>
+                <QualityBar q={c.row.quality} />
               </button>
             </li>
           ))}
@@ -949,5 +951,17 @@ function OverlayPanel(props: {
         </>
       )}
     </div>
+  );
+}
+
+/** a file's quality as five short bars, lit from the left */
+function QualityBar(props: { q: number }) {
+  const lit = Math.round(props.q / 20);
+  return (
+    <span className={`k-q q${lit}`} aria-label={`quality ${props.q} of 100`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <i key={i} className={i <= lit ? "on" : ""} />
+      ))}
+    </span>
   );
 }

@@ -344,3 +344,31 @@ button.k-find:disabled {
 .k-score.good {
   color: var(--green);
 }
+.k-q {
+  flex: none;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 9px;
+  margin-left: 4px;
+}
+.k-q i {
+  display: block;
+  width: 3px;
+  height: 100%;
+  background: var(--frame);
+}
+.k-q i.on {
+  background: var(--blue-mid);
+}
+.k-q.q4 i.on,
+.k-q.q5 i.on {
+  background: var(--green);
+}
+.k-q.q1 i.on,
+.k-q.q2 i.on {
+  background: var(--amber);
+}
+.k-found .k-q {
+  margin-left: auto;
+}

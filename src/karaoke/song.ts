@@ -43,6 +43,9 @@ export interface Song {
   /** UltraStar: the audio file the song was timed to (#MP3), which the user may add */
   audioName?: string;
   duration: number;
+  /** a karaoke MIDI: the share of its lyrics that a melody note sounds under (0..1); 0 where no
+   *  track follows the lyrics */
+  melodyHit?: number;
 }
 
 const FEMALE = /\b(adele|gaga|whitney|mariah|celine|beyonc|rihanna|taylor|ariana|madonna|britney|aretha|dolly|shakira|katy|pink|sia|amy|norah|alicia|tina|cher|lorde|billie eilish|dua)\b/i;
@@ -255,6 +258,7 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
   const guide: MidiNote[] = [];
   const sungKeys = new Set<MidiNote>();
   const mel = lyrics.length ? melodyOf(m, lyrics) : null;
+  let missed = 0;
   if (mel) {
     const line = monophonic(m.notes.filter((n) => n.track === mel.track && n.ch === mel.ch));
     const orig = m.notes.filter((n) => n.track === mel.track && n.ch === mel.ch);
@@ -276,6 +280,7 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
         j++;
       }
       if (first) {
+        missed++;
         // no melody note under this lyric: sing it at the pitch around it, for its time
         const prev = notes[notes.length - 1];
         const t1 = Math.min(next, l.t + 0.5);
@@ -314,6 +319,7 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
     title: title ? title.replace(/\b\w+/g, (w) => w[0] + w.slice(1).toLowerCase()) : fTitle,
     artist: artist || fArtist,
     kind: lyrics.length ? "kar" : "midi",
+    melodyHit: lyrics.length ? (mel ? 1 - missed / lyrics.length : 0) : undefined,
     parts: [{ name: lyrics.length ? name : `${name} (scat)`, body, notes }],
     backing,
     guide,
