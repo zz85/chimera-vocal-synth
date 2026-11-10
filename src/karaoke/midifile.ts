@@ -175,5 +175,19 @@ export function parseMidi(buf: ArrayBuffer | Uint8Array): MidiFile {
   }
   for (const [key, list] of open) for (const on of list) notes.push({ t0: on.t0, t1: end, track: on.track, ch: Math.floor(key / 128), midi: key % 128, vel: on.vel });
   notes.sort((a, b) => a.t0 - b.t0 || a.midi - b.midi);
+  // some files open with minutes (or hours) of nothing, a broken first delta: start them 2 s
+  // before their first note, keeping the set-up events at 0
+  const first = notes[0]?.t0 ?? 0;
+  if (first > 30) {
+    const cut = first - 2;
+    const at = (t: number) => Math.max(0, t - cut);
+    for (const n of notes) {
+      n.t0 = at(n.t0);
+      n.t1 = at(n.t1);
+    }
+    for (const x of texts) x.t = at(x.t);
+    for (const c of controls) c.t = at(c.t);
+    end = at(end);
+  }
   return { notes, texts, controls, trackNames, programs, duration: end };
 }

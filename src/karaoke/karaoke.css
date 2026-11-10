@@ -245,3 +245,26 @@
     grid-template-rows: 300px auto 120px;
   }
 }
+.k-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-left: 3px solid var(--amber);
+  background: rgba(255, 179, 64, 0.05);
+}
+.k-add.small {
+  padding: 4px;
+  font-size: 10px;
+}
+.k-hint.warn {
+  color: var(--amber);
+}
+.k-octave .k-auto {
+  width: auto;
+  margin-left: auto;
+  padding: 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}

@@ -19,7 +19,8 @@ import type { BodyMix } from "../wasm/types.ts";
 import { parseSong, autoOctave, type Song, type BodyName, type VNote } from "./song.ts";
 import { planPart, type Phrase } from "./plan.ts";
 import { KaraokePlayer, SOUNDFONTS } from "./player.ts";
-import type { MidiNote } from "./midifile.ts";
+import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
+import { align, applyAlignment, nudgeRatio, rescore, type Alignment } from "./align.ts";
 import "./karaoke.css";
 
 const AnatomyView3D = lazy(() => import("../ui/components/AnatomyView3D.tsx").then((m) => ({ default: m.AnatomyView3D })));
@@ -38,6 +39,8 @@ interface PartSettings {
 
 interface Entry {
   file: string;
+  /** a MIDI from the list that songs.json puts under this song by default */
+  backing?: string;
   song: Song | null;
   error?: string;
   /** a dropped file's bytes (songs from the list are fetched) */
@@ -46,6 +49,37 @@ interface Entry {
 
 /** a file name as a URL path (Vite's file server doesn't decode %26 or %5B, so those stay as they are) */
 const fileUrl = (name: string) => encodeURI(name).replace(/#/g, "%23").replace(/\?/g, "%3F");
+
+/** a MIDI file lined up under an UltraStar song */
+interface Overlay {
+  file: string;
+  midi: MidiFile;
+  /** what auto-align found (Auto-align goes back to it) */
+  auto: Alignment;
+  align: Alignment;
+  muteMelody: boolean;
+}
+
+/** what's kept per song: the MIDI's name and how it lines up */
+interface SavedOverlay {
+  file: string;
+  ratio: number;
+  offset: number;
+  transpose: number;
+  melody: string | null;
+  muteMelody: boolean;
+  /** follow the recording's tempo changes (the auto warp) */
+  warp: boolean;
+}
+const savedKey = (song: Song) => `chimera-karaoke:overlay:${song.id}`;
+
+function loadSaved(song: Song): SavedOverlay | null {
+  try {
+    return JSON.parse(localStorage.getItem(savedKey(song)) ?? "null");
+  } catch {
+    return null;
+  }
+}
 
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
@@ -69,6 +103,9 @@ export function KaraokePage() {
   const [epoch, setEpoch] = useState(0);
   const phrasesRef = useRef<Phrase[][]>([]);
   const [dragging, setDragging] = useState(false);
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
+  const [aligning, setAligning] = useState<string | null>(null);
+  const shiftRef = useRef(false);
 
   // the player, the dictionary and the song list
   useEffect(() => {
@@ -89,7 +126,7 @@ export function KaraokePage() {
       .finally(() => live && setDictReady(true));
     fetch(BASE + "songs.json")
       .then((r) => (r.ok ? r.json() : []))
-      .then((files: string[]) => live && setEntries((e) => [...files.map((file) => ({ file, song: null })), ...e]))
+      .then((files: (string | { file: string; backing?: string })[]) => live && setEntries((e) => [...files.map((f) => (typeof f === "string" ? { file: f, song: null } : { file: f.file, backing: f.backing, song: null })), ...e]))
       .catch(() => {});
     return () => {
       live = false;
@@ -132,6 +169,68 @@ export function KaraokePage() {
     [entries, player],
   );
 
+  // a MIDI under an UltraStar song: line it up (or take the saved lining up), then use it
+  const attach = useCallback((s: Song, file: string, bytes: Uint8Array, saved: SavedOverlay | null) => {
+    setAligning(file);
+    // let the page show "Lining up..." before the vote runs
+    setTimeout(() => {
+      try {
+        const midi = parseMidi(bytes);
+        const sung = s.parts.flatMap((p) => p.notes.map((n) => ({ t0: n.t0, midi: n.midi })));
+        const auto = align(sung, midi);
+        let a = auto;
+        if (saved && saved.file === file) {
+          a = { ...auto, ratio: saved.ratio, offset: saved.offset, transpose: saved.transpose, melody: saved.melody, warp: saved.warp === false ? null : auto.warp };
+          a = { ...a, score: rescore(sung, midi, a) };
+        }
+        setOverlay({ file, midi, auto, align: a, muteMelody: saved?.file === file ? saved.muteMelody : true });
+      } catch (e) {
+        setError(`${file}: ${e instanceof Error ? e.message : e}`);
+      } finally {
+        setAligning(null);
+      }
+    }, 30);
+  }, []);
+
+  const fetchBytes = async (file: string): Promise<Uint8Array> => {
+    const res = await fetch(BASE + fileUrl(file));
+    if (!res.ok || /text\/html/.test(res.headers.get("content-type") ?? "")) throw new Error(`${file}: not found in public/shows/karaoke/`);
+    return new Uint8Array(await res.arrayBuffer());
+  };
+
+  // a new song drops the overlay, then brings back the one saved for it (a file from the list)
+  useEffect(() => {
+    setOverlay(null);
+    if (!song || song.kind !== "ultrastar") return;
+    const saved = loadSaved(song);
+    // what this browser kept, else the backing songs.json gives the song
+    const file = saved?.file ?? entries.find((x) => x.song === song)?.backing;
+    if (!file) return;
+    const e = entries.find((x) => x.file === file);
+    (e?.bytes ? Promise.resolve(e.bytes) : fetchBytes(file)).then((b) => attach(song, file, b, saved)).catch(() => {});
+    // entries change as songs are read; only a new song restores
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song, attach]);
+
+  // keep the lining up for next time
+  useEffect(() => {
+    if (!song || !overlay) return;
+    const a = overlay.align;
+    const v: SavedOverlay = { file: overlay.file, ratio: a.ratio, offset: a.offset, transpose: a.transpose, melody: a.melody, muteMelody: overlay.muteMelody, warp: !!a.warp };
+    localStorage.setItem(savedKey(song), JSON.stringify(v));
+  }, [song, overlay]);
+
+  const placed = useMemo(() => (overlay ? applyAlignment(overlay.midi, overlay.align, overlay.muteMelody) : null), [overlay]);
+  const backing = song?.backing ?? placed?.backing ?? null;
+  const sungRefs = useMemo(() => (song ? song.parts.flatMap((p) => p.notes.map((n) => ({ t0: n.t0, midi: n.midi }))) : []), [song]);
+  const setAlign = (patch: Partial<Alignment>) =>
+    setOverlay((o) => {
+      if (!o) return o;
+      const a = { ...o.align, ...patch };
+      return { ...o, align: { ...a, score: rescore(sungRefs, o.midi, a) } };
+    });
+  const firstSung = song ? Math.min(...song.parts.map((p) => p.notes[0]?.t0 ?? Infinity)) : 0;
+
   // each part's body and octave, from the song's own guess
   useEffect(() => {
     if (!song) return;
@@ -141,12 +240,12 @@ export function KaraokePage() {
   // plan the parts and hand them to the player
   useEffect(() => {
     if (!song || !player || !dictReady || settings.length !== song.parts.length) return;
-    player.duration = song.duration;
+    player.duration = Math.max(song.duration, (backing?.duration ?? 0) + 1);
     const phrases = song.parts.map((p, i) => planPart(p.notes, { body: BODIES[settings[i].body], octave: settings[i].octave, vibrato }));
     phrasesRef.current = phrases;
     player.setParts(song.parts.map((_, i) => ({ body: BODIES[settings[i].body], phrases: phrases[i], muted: settings[i].muted })));
     setTick((n) => n + 1);
-  }, [song, player, dictReady, settings, vibrato]);
+  }, [song, player, dictReady, settings, vibrato, backing]);
 
   // the backing (and the melody guide)
   useEffect(() => {
@@ -154,10 +253,11 @@ export function KaraokePage() {
     let guideNotes: MidiNote[] | null = null;
     if (guide) {
       if (song.guide.length) guideNotes = song.guide;
+      else if (placed?.melody.length) guideNotes = placed.melody;
       else
         guideNotes = song.parts.flatMap((p, i) => (settings[i].muted ? [] : p.notes.map((n) => ({ t0: n.t0, t1: n.t1, track: 0, ch: 15, midi: n.midi + 12 * settings[i].octave, vel: 80 }))));
     }
-    const midi = backingOn ? song.backing : null;
+    const midi = backingOn ? backing : null;
     if (midi || guideNotes) {
       setSynthState((s) => (s === "ready" ? s : "loading"));
       player
@@ -166,7 +266,7 @@ export function KaraokePage() {
         .catch(() => setSynthState("failed"));
     }
     player.setBacking(midi, guideNotes);
-  }, [song, player, backingOn, guide, settings]);
+  }, [song, player, backingOn, guide, settings, backing, placed]);
 
   useEffect(() => player?.setVoiceLevel(voiceLevel), [player, voiceLevel]);
   useEffect(() => player?.setBackingLevel(backingLevel), [player, backingLevel]);
@@ -191,6 +291,11 @@ export function KaraokePage() {
         continue;
       }
       const bytes = new Uint8Array(await f.arrayBuffer());
+      // a MIDI dropped on an open UltraStar song goes under it (shift-drop opens it as a song)
+      if (/\.(mid|midi|kar|rmi)$/i.test(f.name) && song?.kind === "ultrastar" && !shiftRef.current) {
+        attach(song, f.name, bytes, null);
+        continue;
+      }
       try {
         added.push({ file: f.name, song: parseSong(f.name, bytes), bytes });
       } catch (e) {
@@ -201,7 +306,7 @@ export function KaraokePage() {
       setEntries((list) => [...list.filter((x) => !added.some((a) => a.file === x.file)), ...added]);
       setCurrent(added[0].file);
     }
-  }, [player]);
+  }, [player, song, attach]);
 
   const t = player?.time() ?? 0;
   const duration = song?.duration ?? 0;
@@ -238,6 +343,7 @@ export function KaraokePage() {
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
         e.preventDefault();
+        shiftRef.current = e.shiftKey;
         setDragging(false);
         void addFiles(e.dataTransfer.files);
       }}
@@ -292,7 +398,7 @@ export function KaraokePage() {
               </div>
             )}
             <Lyrics song={song} time={t} settings={settings} />
-            <Roll song={song} player={player} settings={settings} />
+            <Roll song={song} player={player} settings={settings} backing={backing} />
           </>
         )}
       </main>
@@ -326,7 +432,29 @@ export function KaraokePage() {
             <Slider label="Vibrato" value={vibrato} min={0} max={80} step={5} onChange={(v) => setVibrato(Math.round(v / 5) * 5)} format={(v) => `${Math.round(v)} ct`} />
             <Slider label="Voices" value={voiceLevel} min={0} max={1.5} onChange={setVoiceLevel} format={(v) => `${Math.round(v * 100)}%`} />
             <div className="k-sep" />
-            {song.backing ? (
+            {song.kind === "ultrastar" && (
+              <OverlayPanel
+                overlay={overlay}
+                aligning={aligning}
+                midiFiles={entries.filter((e) => /\.(mid|midi|kar|rmi)$/i.test(e.file)).map((e) => e.file)}
+                onPick={(file) => {
+                  if (!file) {
+                    setOverlay(null);
+                    localStorage.removeItem(savedKey(song));
+                    return;
+                  }
+                  const e = entries.find((x) => x.file === file);
+                  (e?.bytes ? Promise.resolve(e.bytes) : fetchBytes(file)).then((b) => attach(song, file, b, null)).catch((err) => setError(String(err)));
+                }}
+                onFile={(f) => void f.arrayBuffer().then((b) => attach(song, f.name, new Uint8Array(b), null))}
+                onAlign={setAlign}
+                onRatio={(r) => overlay && setAlign(nudgeRatio(overlay.align, r, firstSung))}
+                onAuto={() => setOverlay((o) => (o ? { ...o, align: o.auto } : o))}
+                onMute={(m) => setOverlay((o) => (o ? { ...o, muteMelody: m } : o))}
+                onWarp={(w) => overlay && setAlign({ warp: w ? overlay.auto.warp : null })}
+              />
+            )}
+            {backing ? (
               <>
                 <Toggle label={`Backing (${synthState === "loading" ? "loading soundfont…" : synthState === "failed" ? "soundfont failed" : "MIDI"})`} checked={backingOn} onChange={setBackingOn} />
                 <label className="k-select">
@@ -504,7 +632,7 @@ function Lyrics(props: { song: Song; time: number; settings: PartSettings[] }) {
 }
 
 /** a scrolling piano roll: each part's notes as sung (with its octave), the backing faintly */
-function Roll(props: { song: Song; player: KaraokePlayer; settings: PartSettings[] }) {
+function Roll(props: { song: Song; player: KaraokePlayer; settings: PartSettings[]; backing: MidiFile | null }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
@@ -514,7 +642,7 @@ function Roll(props: { song: Song; player: KaraokePlayer; settings: PartSettings
     let raf = 0;
     const draw = () => {
       raf = requestAnimationFrame(draw);
-      const { song, player, settings } = propsRef.current;
+      const { song, player, settings, backing } = propsRef.current;
       const dpr = Math.min(2, devicePixelRatio);
       const w = c.clientWidth, h = c.clientHeight;
       if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
@@ -559,7 +687,7 @@ function Roll(props: { song: Song; player: KaraokePlayer; settings: PartSettings
           g.fillText(`C${m / 12 - 1}`, 4, y(m) - 2);
         }
       // the backing, faint
-      const b = song.backing;
+      const b = backing;
       if (b) {
         g.fillStyle = "rgba(52, 135, 196, 0.18)";
         for (const n of b.notes) {
@@ -595,4 +723,83 @@ function Roll(props: { song: Song; player: KaraokePlayer; settings: PartSettings
     return () => cancelAnimationFrame(raf);
   }, []);
   return <canvas ref={ref} className="k-roll" />;
+}
+
+/** the MIDI under an UltraStar song: which file, how well it lines up, and the hand controls */
+function OverlayPanel(props: {
+  overlay: Overlay | null;
+  aligning: string | null;
+  midiFiles: string[];
+  onPick: (file: string | null) => void;
+  onFile: (f: File) => void;
+  onAlign: (patch: Partial<Alignment>) => void;
+  onRatio: (r: number) => void;
+  onAuto: () => void;
+  onMute: (m: boolean) => void;
+  onWarp: (on: boolean) => void;
+}) {
+  const { overlay: o, aligning } = props;
+  const a = o?.align;
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  return (
+    <div className="k-overlay">
+      <label className="k-select">
+        <span>MIDI backing</span>
+        <select value={aligning ?? o?.file ?? ""} onChange={(e) => props.onPick(e.target.value || null)}>
+          <option value="">None</option>
+          {aligning && !props.midiFiles.includes(aligning) && <option value={aligning}>{aligning}</option>}
+          {o && o.file !== aligning && !props.midiFiles.includes(o.file) && <option value={o.file}>{o.file}</option>}
+          {props.midiFiles.map((f) => (
+            <option key={f} value={f}>
+              {f.replace(/\.[^.]+$/, "")}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="k-add small">
+        <input type="file" accept=".mid,.midi,.kar,.rmi" onChange={(e) => e.target.files?.[0] && props.onFile(e.target.files[0])} />
+        Load a MIDI…
+      </label>
+      {aligning && <p className="k-hint">Lining up {aligning}…</p>}
+      {!o && !aligning && <p className="k-hint">Drop a .mid or .kar here to play it under this song, lined up to the singing. Shift-drop opens it as a song of its own.</p>}
+      {o && a && !aligning && (
+        <>
+          <p className={`k-hint${a.score < 0.35 ? " warn" : ""}`}>
+            {a.melody ? `Melody: ${a.tracks.find((t) => t.key === a.melody)?.name ?? a.melody}, ${pct(a.score)} of sung notes land on it.` : "No track follows the singing: line it up by ear."}
+            {a.melody && a.score < 0.35 ? " A weak match: check it by ear." : ""}
+          </p>
+          <label className="k-select">
+            <span>Melody track</span>
+            <select value={a.melody ?? ""} onChange={(e) => props.onAlign({ melody: e.target.value || null })}>
+              <option value="">None</option>
+              {a.tracks.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.name} ({pct(t.score)})
+                </option>
+              ))}
+            </select>
+          </label>
+          <Toggle label="Mute the MIDI melody" checked={o.muteMelody} onChange={props.onMute} />
+          {o.auto.warp && <Toggle label="Follow the recording's tempo changes" checked={!!a.warp} onChange={props.onWarp} />}
+          <Slider label="Offset" value={a.offset} min={o.auto.offset - 10} max={o.auto.offset + 10} onChange={(v) => props.onAlign({ offset: Math.round(v * 100) / 100 })} format={(v) => `${v >= 0 ? "+" : ""}${v.toFixed(2)} s`} />
+          <div className="k-octave">
+            <span>Nudge</span>
+            <button aria-label="50 ms earlier" onClick={() => props.onAlign({ offset: a.offset - 0.05 })}>−</button>
+            <output>50 ms</output>
+            <button aria-label="50 ms later" onClick={() => props.onAlign({ offset: a.offset + 0.05 })}>+</button>
+          </div>
+          <Slider label="Tempo" value={a.ratio} min={o.auto.ratio * 0.95} max={o.auto.ratio * 1.05} onChange={(v) => props.onRatio(Math.round(v * 2000) / 2000)} format={(v) => `${v >= 1 ? "+" : ""}${((v - 1) * 100).toFixed(1)}%`} />
+          <div className="k-octave">
+            <span>Transpose</span>
+            <button aria-label="Transpose down" onClick={() => props.onAlign({ transpose: a.transpose - 1 })}>−</button>
+            <output>{a.transpose > 0 ? `+${a.transpose}` : a.transpose}</output>
+            <button aria-label="Transpose up" onClick={() => props.onAlign({ transpose: a.transpose + 1 })}>+</button>
+            <button className="k-auto" onClick={props.onAuto}>
+              Auto-align
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }

@@ -169,7 +169,8 @@ function karaokeLyrics(m: MidiFile): { lyrics: Lyric[]; title: string; artist: s
   let pendingLine = true;
   for (const t of m.texts) {
     if (t.track !== track || t.kind !== kind || t.text.startsWith("@")) continue;
-    let s = t.text.replace(/\r/g, "");
+    // a carriage return is a line break in some files ("\r" alone, or after the syllable)
+    let s = t.text.replace(/\r\n?/g, "/");
     let line: boolean = pendingLine;
     if (/^[\\/\n]/.test(s)) {
       line = true;
