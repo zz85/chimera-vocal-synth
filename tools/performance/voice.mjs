@@ -8,6 +8,16 @@ import { hasKana, japaneseSyllables } from './japanese.mjs';
 export const sampleRate = 48000;
 export const fps = 25;
 
+// Singing styles: a score's top-level "style" picks one. vibrato is the depth (cents) on held
+// vowels, drift the slow random pitch wander (cents), roughness the cycle-to-cycle jitter (0..1).
+// slide (s), where set, is how long the voice takes to move from one sung note's pitch to the
+// next; without it the engine's own pitch ramps apply (about 60 ms on each side of a note).
+export const STYLES = {
+  steady: { vibrato: 6, drift: 0, roughness: 0.03, slide: 0.025 },
+  natural: { vibrato: 22, drift: 5, roughness: 0.1 },
+  ballad: { vibrato: 30, drift: 3, roughness: 0.08 },
+};
+
 export async function createVoice(engineDirectory, score) {
   const load = name => import(pathToFileURL(join(engineDirectory, name)).href);
   const { HumanVoice } = await load('src/engine/voice/humanVoice.ts');
@@ -23,7 +33,9 @@ export async function createVoice(engineDirectory, score) {
   model.bodyParams = BODY_MALE;
   model.tract = { scale: BODY_MALE.scale, P: model.airway.tract.P.bind(model.airway.tract) };
   const voice = new HumanVoice({ fsOut: sampleRate, body: BODY_MALE });
-  voice.setSource({ f0: 125, pressure: 9, tension: 0.55, voiced: true });
+  const style = STYLES[score.style ?? 'natural'];
+  if (!style) throw new Error('Unknown style ' + score.style + '; use one of ' + Object.keys(STYLES).join(', '));
+  voice.setSource({ f0: 125, pressure: 9, tension: 0.55, voiced: true, drift: style.drift, roughness: style.roughness });
   const dictionary = new EnglishG2P();
   dictionary.setDictionaryText(gunzipSync(readFileSync(join(engineDirectory, 'public/data/cmudict.txt.gz'))).toString());
   const captions = [];
@@ -48,7 +60,9 @@ export async function createVoice(engineDirectory, score) {
             return { midi, beats: (w.end - w.start) * weight / beats, syl: syllables[i] };
           });
         });
-        plans.push(planSong(notes, { body: 'male', bpm: 60, t0: start, vibrato: 22 }));
+        const plan = planSong(notes, { body: 'male', bpm: 60, t0: start, vibrato: style.vibrato });
+        if (style.slide) tightenSlides(plan, style.slide);
+        plans.push(plan);
       } else {
         const segments = batch.flatMap(w => {
           if (!Number.isFinite(w.hz) || w.hz <= 0) throw new Error('Invalid pitch for ' + w.text);
@@ -74,4 +88,22 @@ export async function createVoice(engineDirectory, score) {
   if (!plans.length) throw new Error('The score is empty.');
   const duration = Math.max(lastEnd, ...plans.map(p => p.end)) + 0.35;
   return { voice, model, writeWav, captions, plans, duration };
+}
+
+/**
+ * Shorten the move between a phrase's sung pitches to `slide` seconds. The engine ramps each
+ * note's pitch in and out over 60 ms around its vowel, and the consonants between two vowels
+ * are left with no pitch at all, where the voice drifts toward its resting pitch. Here each
+ * note's pitch holds through the consonants up to the next note's vowel, and the two cross
+ * over in the last `slide` seconds before it.
+ */
+function tightenSlides(plan, slide) {
+  const pitches = plan.gestures.filter(g => g.label === 'pitch' && g.targets.f0 !== undefined).sort((a, b) => a.t0 - b.t0);
+  for (let i = 0; i + 1 < pitches.length; i++) {
+    const g = pitches[i], next = pitches[i + 1];
+    if (next.t0 - g.t1 > 0.35) continue; // a breath between phrases
+    g.t1 = Math.max(g.t0, next.t0 - slide);
+    g.rampOut = slide;
+    next.rampIn = slide;
+  }
 }
