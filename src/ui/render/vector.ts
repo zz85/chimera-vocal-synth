@@ -10,7 +10,7 @@ import { V, core } from "../colors.ts";
 export type Pt = [number, number];
 
 /** Hershey Simplex first; anything it lacks (IPA, ², ×) falls back to Archivo, which covers IPA. */
-export const HERSHEY = '"Hershey", "Archivo", "CJK", system-ui, sans-serif';
+export const HERSHEY = '"Hershey", "Archivo", "CJK", "CJKFull", system-ui, sans-serif';
 export const hfont = (size: number, weight: "l" | "m" = "l") => `${weight === "m" ? 500 : 300} ${size}px ${HERSHEY}`;
 
 const hasLetterSpacing = typeof CanvasRenderingContext2D !== "undefined" && "letterSpacing" in CanvasRenderingContext2D.prototype;

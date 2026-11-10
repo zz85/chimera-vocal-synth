@@ -21,6 +21,10 @@ const cjk = [process.env.CJK_FONT, '/usr/share/fonts/google-droid-sans-fonts/Dro
   '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc', '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
   '/System/Library/Fonts/Hiragino Sans GB.ttc'].find(f => f && existsSync(f));
 if (cjk) GlobalFonts.registerFromPath(cjk, 'CJK');
+// a font with every Han character, for Chinese text the Japanese font lacks (CJK_FULL_FONT)
+const full = [process.env.CJK_FULL_FONT, '/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf',
+  '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc'].find(f => f && existsSync(f));
+if (full) GlobalFonts.registerFromPath(full, 'CJKFull');
 
 const colors = { ink: '#e5eddd', dim: '#a2b4ab', green: '#8ce1b7', amber: '#ffc578', rule: '#3a4d48' };
 function timecode(t) {
@@ -36,7 +40,7 @@ export function createPicture(model, score, captions, duration) {
   let currentWord = null, wordIndex = 0, lineIndex = 0, formants = [];
   const overlay = mouthWords(() => currentWord, '#ffffff');
   const pitches = [];
-  const text = (str, x, y, size, color = colors.ink, family = 'Archivo, CJK, sans-serif') => {
+  const text = (str, x, y, size, color = colors.ink, family = 'Archivo, CJK, CJKFull, sans-serif') => {
     out.font = size + 'px ' + family;
     out.fillStyle = color;
     out.fillText(str, x, y);
@@ -94,7 +98,7 @@ export function createPicture(model, score, captions, duration) {
     // Find the largest type size that fits this line in the caption region.
     let size = 44, rows;
     for (; size >= 12; size -= 2) {
-      out.font = 'bold ' + size + 'px Archivo, CJK, sans-serif';
+      out.font = 'bold ' + size + 'px Archivo, CJK, CJKFull, sans-serif';
       let x = 585, y = 295;
       rows = [];
       for (const word of line.words) {

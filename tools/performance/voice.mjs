@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hasKana, japaneseSyllables } from './japanese.mjs';
+import { mandarinSyllables } from './mandarin.mjs';
 
 export const sampleRate = 48000;
 export const fps = 25;
@@ -52,7 +53,11 @@ export async function createVoice(engineDirectory, score) {
         const notes = batch.flatMap(w => {
           const said = w.pronunciation ?? w.text;
           // Japanese words are kana, one mora per note; everything else goes through the English dictionary
-          const syllables = w.lang === 'ja' || hasKana(said) ? japaneseSyllables(said, w.notes.length, ipa => !!phoneme(ipa)) : lyricsToSyllables(said, dictionary);
+          const known = ipa => !!phoneme(ipa);
+          // Mandarin words are pinyin ("lang": "zh"), one syllable per note; the engine change that
+          // adds tʂ also adds the aspiration flag Mandarin's b/p contrast needs
+          const syllables = w.lang === 'zh' ? mandarinSyllables(said, known, known('tʂ'))
+            : w.lang === 'ja' || hasKana(said) ? japaneseSyllables(said, w.notes.length, known) : lyricsToSyllables(said, dictionary);
           if (syllables.length !== w.notes.length) throw new Error('Syllable/note mismatch for ' + w.text);
           const beats = w.notes.reduce((sum, n) => sum + n[1], 0);
           if (!Number.isFinite(beats) || beats <= 0) throw new Error('Invalid note weights.');
