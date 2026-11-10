@@ -26,6 +26,7 @@ export async function createVoice(engineDirectory, score) {
   const { planUtterance, isVowel } = await load('src/engine/phonetics/planner.ts');
   const { lyricsToSyllables } = await load('src/engine/phonetics/syllables.ts');
   const { planSong } = await load('src/engine/phonetics/sing.ts');
+  const { phoneme } = await load('src/engine/phonetics/inventory.ts');
   const { VoiceModel } = await load('src/ui/analysis.ts');
   const { writeWav } = await load('tools/lib/wav.ts');
   const model = new VoiceModel('male', sampleRate);
@@ -51,7 +52,7 @@ export async function createVoice(engineDirectory, score) {
         const notes = batch.flatMap(w => {
           const said = w.pronunciation ?? w.text;
           // Japanese words are kana, one mora per note; everything else goes through the English dictionary
-          const syllables = w.lang === 'ja' || hasKana(said) ? japaneseSyllables(said, w.notes.length) : lyricsToSyllables(said, dictionary);
+          const syllables = w.lang === 'ja' || hasKana(said) ? japaneseSyllables(said, w.notes.length, ipa => !!phoneme(ipa)) : lyricsToSyllables(said, dictionary);
           if (syllables.length !== w.notes.length) throw new Error('Syllable/note mismatch for ' + w.text);
           const beats = w.notes.reduce((sum, n) => sum + n[1], 0);
           if (!Number.isFinite(beats) || beats <= 0) throw new Error('Invalid note weights.');

@@ -4,8 +4,9 @@
 //   ー  holds the vowel (long vowel)
 //   っ  closes the vowel with the next mora's stop (or a glottal stop at the word's end)
 // Small ゃゅょぁぃぅぇぉ join the mora before (きゃ, しょ, ふぁ). Katakana is read as hiragana.
-// Consonants the engine lacks are written with their nearest neighbours: ɕ as ʃ, tɕ as tʃ,
-// dʑ as dʒ. Vowels: a i ɯ e o.
+// し ち じ are the alveolo-palatal ɕ tɕ dʑ. On an engine whose inventory lacks them (the
+// `known` check), they are sung as the nearest postalveolars ʃ tʃ dʒ.
+// Vowels: a i ɯ e o.
 
 const V = { a: 'a', i: 'i', u: 'ɯ', e: 'e', o: 'o' };
 
@@ -14,10 +15,10 @@ const ROWS = {
   あ: ['', 'a'], い: ['', 'i'], う: ['', 'u'], え: ['', 'e'], お: ['', 'o'],
   か: ['k', 'a'], き: ['k', 'i'], く: ['k', 'u'], け: ['k', 'e'], こ: ['k', 'o'],
   が: ['g', 'a'], ぎ: ['g', 'i'], ぐ: ['g', 'u'], げ: ['g', 'e'], ご: ['g', 'o'],
-  さ: ['s', 'a'], し: ['ʃ', 'i'], す: ['s', 'u'], せ: ['s', 'e'], そ: ['s', 'o'],
-  ざ: ['z', 'a'], じ: ['dʒ', 'i'], ず: ['z', 'u'], ぜ: ['z', 'e'], ぞ: ['z', 'o'],
-  た: ['t', 'a'], ち: ['tʃ', 'i'], つ: ['ts', 'u'], て: ['t', 'e'], と: ['t', 'o'],
-  だ: ['d', 'a'], ぢ: ['dʒ', 'i'], づ: ['z', 'u'], で: ['d', 'e'], ど: ['d', 'o'],
+  さ: ['s', 'a'], し: ['ɕ', 'i'], す: ['s', 'u'], せ: ['s', 'e'], そ: ['s', 'o'],
+  ざ: ['z', 'a'], じ: ['dʑ', 'i'], ず: ['z', 'u'], ぜ: ['z', 'e'], ぞ: ['z', 'o'],
+  た: ['t', 'a'], ち: ['tɕ', 'i'], つ: ['ts', 'u'], て: ['t', 'e'], と: ['t', 'o'],
+  だ: ['d', 'a'], ぢ: ['dʑ', 'i'], づ: ['z', 'u'], で: ['d', 'e'], ど: ['d', 'o'],
   な: ['n', 'a'], に: ['ɲ', 'i'], ぬ: ['n', 'u'], ね: ['n', 'e'], の: ['n', 'o'],
   は: ['h', 'a'], ひ: ['ç', 'i'], ふ: ['ɸ', 'u'], へ: ['h', 'e'], ほ: ['h', 'o'],
   ば: ['b', 'a'], び: ['b', 'i'], ぶ: ['b', 'u'], べ: ['b', 'e'], ぼ: ['b', 'o'],
@@ -30,13 +31,15 @@ const ROWS = {
 // small kana: the vowel they give the mora before, and the glide they add after its consonant
 const SMALL = { ゃ: ['j', 'a'], ゅ: ['j', 'u'], ょ: ['j', 'o'], ぁ: ['', 'a'], ぃ: ['', 'i'], ぅ: ['', 'u'], ぇ: ['', 'e'], ぉ: ['', 'o'] };
 // consonants whose own articulation is palatal already: a small ゃゅょ adds no j
-const PALATAL = new Set(['ʃ', 'tʃ', 'dʒ', 'ç', 'ɲ']);
+const PALATAL = new Set(['ɕ', 'tɕ', 'dʑ', 'ç', 'ɲ']);
 // palatal forms for き+ゃ etc.
-const PAL = { h: 'ç', n: 'ɲ', s: 'ʃ', z: 'dʒ', t: 'tʃ', d: 'dʒ' };
-const STOPS = new Set(['p', 'b', 't', 'd', 'k', 'g', 'tʃ', 'dʒ', 'ts']);
+const PAL = { h: 'ç', n: 'ɲ', s: 'ɕ', z: 'dʑ', t: 'tɕ', d: 'dʑ' };
+const STOPS = new Set(['p', 'b', 't', 'd', 'k', 'g', 'tɕ', 'dʑ', 'ts']);
 
 export const hasKana = s => /[\u3040-\u30ff]/.test(s);
 const toHiragana = s => s.replace(/[\u30a1-\u30f6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+
+const FALLBACK = { ɕ: 'ʃ', tɕ: 'tʃ', dʑ: 'dʒ' };
 
 /** Kana -> morae: { onset: string[], vowel, mark? } with mark 'n' | 'long' | 'q'. */
 export function kanaMorae(text) {
@@ -69,9 +72,11 @@ export function kanaMorae(text) {
 /**
  * Kana -> engine syllables, one per mora. With `notes`, a text with more morae than notes is
  * fitted to them: held vowels (ー, ん) fold into the mora before first, then vowel-only morae
- * (the う of じょう), so a long syllable sung on one note keeps one vowel.
+ * (the う of じょう), so a long syllable sung on one note keeps one vowel. `known` says whether
+ * the engine has a consonant.
  */
-export function japaneseSyllables(text, notes) {
+export function japaneseSyllables(text, notes, known = () => true) {
+  const fallback = ipa => (FALLBACK[ipa] && !known(ipa) ? FALLBACK[ipa] : ipa);
   const morae = kanaMorae(text);
   const syls = [];
   let base = null; // the syllable whose vowel a mark holds on
@@ -82,14 +87,14 @@ export function japaneseSyllables(text, notes) {
         // っ: close on the next mora's stop; where none follows, a glottal stop
         const next = morae[i + 1];
         const c = next?.onset?.[0];
-        base.coda = [{ ipa: c && STOPS.has(c) ? (c === 'ts' ? 't' : c === 'tʃ' || c === 'dʒ' ? 't' : c) : 'ʔ' }];
+        base.coda = [{ ipa: c && STOPS.has(c) ? (c === 'ts' || c === 'tɕ' || c === 'dʑ' ? 't' : c) : 'ʔ' }];
         return; // っ takes no note of its own when it shares a note with its mora
       }
       if (m.mark === 'n') base.coda = [{ ipa: 'n' }];
       syls.push({ text: '~', onset: [], nucleus: base.nucleus, coda: [], melisma: true, wordEnd: false, phraseEnd: false });
       return;
     }
-    base = { text: '', onset: m.onset.map(ipa => ({ ipa })), nucleus: { ipa: V[m.vowel], stress: 1 }, coda: [], wordEnd: false, phraseEnd: false };
+    base = { text: '', onset: m.onset.map(ipa => ({ ipa: fallback(ipa) })), nucleus: { ipa: V[m.vowel], stress: 1 }, coda: [], wordEnd: false, phraseEnd: false };
     syls.push(base);
   });
   if (notes !== undefined) {
