@@ -486,9 +486,9 @@ export function KaraokePage() {
             onFocus={() => void ensureLakh()}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button className="k-add small k-random" disabled={picking} onClick={() => void pickRandom()} title={`A random karaoke file from Lakh of quality ${RANDOM_QUALITY} or more`}>
+          {!(lakhState === "missing" && !entries.length) && <button className="k-add small k-random" disabled={picking} onClick={() => void pickRandom()} title={`A random karaoke file from Lakh of quality ${RANDOM_QUALITY} or more`}>
             {picking ? "Picking…" : "Random song"}
-          </button>
+          </button>}
           {q.trim().length >= 2 && (
             <div className="k-search-opts">
               <Toggle label="With lyrics only" checked={lyricsOnly} onChange={setLyricsOnly} />
