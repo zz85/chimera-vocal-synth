@@ -52,6 +52,9 @@ interface Entry {
   badge?: string;
 }
 
+/** the least quality of a random pick (about 23,000 Lakh files reach it) */
+const RANDOM_QUALITY = 90;
+
 const entryName = (e: Entry) => e.label ?? e.file.replace(/\.[^.]+$/, "");
 const entryBadge = (e: Entry) => e.badge ?? (/\.txt$/i.test(e.file) ? "US" : /\.kar$/i.test(e.file) ? "KAR" : "MIDI");
 const lakhEntry = (r: LakhRow): Entry => ({ file: lakhPath(r.md5), label: r.name, badge: r.lyrics ? "KAR" : "MIDI", song: null });
@@ -155,6 +158,28 @@ export function KaraokePage() {
     return () => clearTimeout(id);
   }, [query]);
   const results = useMemo(() => (lakh && q.trim().length >= 2 ? searchLakh(lakh, q, { lyricsOnly, limit: 200 }) : []), [lakh, q, lyricsOnly]);
+  // a random song: a karaoke file from Lakh that sings well, of a usual length, not one of the
+  // last few picked; the page's own songs where there is no Lakh index
+  const recent = useRef<string[]>([]);
+  const [picking, setPicking] = useState(false);
+  const pickRandom = async () => {
+    setPicking(true);
+    try {
+      const rows = await ensureLakh();
+      const pool = rows ? rows.filter((r) => r.lyrics > 0 && r.quality >= RANDOM_QUALITY && r.seconds >= 90 && r.seconds <= 420) : [];
+      if (pool.length) {
+        let r = pool[Math.floor(Math.random() * pool.length)];
+        for (let k = 0; k < 8 && recent.current.includes(r.md5); k++) r = pool[Math.floor(Math.random() * pool.length)];
+        recent.current = [r.md5, ...recent.current].slice(0, 20);
+        await open(lakhPath(r.md5), lakhEntry(r));
+        return;
+      }
+      const songs = entries.filter((e) => e.file !== current && !e.error);
+      if (songs.length) await open(songs[Math.floor(Math.random() * songs.length)].file);
+    } finally {
+      setPicking(false);
+    }
+  };
   const localHits = useMemo(() => {
     const w = q.trim().toLowerCase();
     return w ? entries.filter((e) => entryName(e).toLowerCase().includes(w)) : entries;
@@ -461,6 +486,9 @@ export function KaraokePage() {
             onFocus={() => void ensureLakh()}
             onChange={(e) => setQuery(e.target.value)}
           />
+          <button className="k-add small k-random" disabled={picking} onClick={() => void pickRandom()} title={`A random karaoke file from Lakh of quality ${RANDOM_QUALITY} or more`}>
+            {picking ? "Picking…" : "Random song"}
+          </button>
           {q.trim().length >= 2 && (
             <div className="k-search-opts">
               <Toggle label="With lyrics only" checked={lyricsOnly} onChange={setLyricsOnly} />

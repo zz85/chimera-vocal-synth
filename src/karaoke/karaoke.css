@@ -372,3 +372,7 @@ button.k-find:disabled {
 .k-found .k-q {
   margin-left: auto;
 }
+button.k-random {
+  width: 100%;
+  background: none;
+}
