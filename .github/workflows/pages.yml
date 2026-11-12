@@ -1,0 +1,59 @@
+# Build the app and publish it to GitHub Pages on every push to main.
+#
+# The site is public. It holds the app alone: public/shows/ is gitignored, so no song, show,
+# soundfont or MIDI dataset is in the checkout or the build. The karaoke page there plays files
+# a visitor drops on it.
+#
+# The build uses relative paths (--base=./), so it works at a project site's /<repo>/ path.
+# Turn Pages on once in the repository's settings: Settings > Pages > Source: GitHub Actions.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deploy at a time; a newer push waits for the one running, and doesn't cancel it
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      # the same steps as `bun run build`, with the relative base
+      - run: bun run wasm
+      - run: bunx tsc --noEmit
+      - run: bunx vite build --base=./
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
