@@ -5,7 +5,8 @@
  * each a list of timed notes with their lyric fragments, and the backing as MIDI where the file
  * has one. Times are seconds from the song's start. Plain data, no DOM.
  */
-import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
+import { parseMidi, trackLabel, type MidiFile, type MidiNote } from "./midifile.ts";
+import { hasKana } from "./japanese.ts";
 
 export type BodyName = "male" | "female" | "child";
 
@@ -46,6 +47,11 @@ export interface Song {
   /** a karaoke MIDI: the share of its lyrics that a melody note sounds under (0..1); 0 where no
    *  track follows the lyrics */
   melodyHit?: number;
+  /** the language the lyrics are sung in: Japanese reads kana and romaji by the mora */
+  lang: "en" | "ja";
+  /** a MIDI without lyrics: the file, and the track the voice sings, so words can be put to it */
+  midi?: MidiFile;
+  melodyKey?: string;
 }
 
 const FEMALE = /\b(adele|gaga|whitney|mariah|celine|beyonc|rihanna|taylor|ariana|madonna|britney|aretha|dolly|shakira|katy|pink|sia|amy|norah|alicia|tina|cher|lorde|billie eilish|dua)\b/i;
@@ -143,7 +149,8 @@ export function parseUltraStar(text: string, id: string): Song {
     parts[a <= b ? 1 : 0].body = "female";
   }
   const duration = Math.max(0, ...parts.flatMap((p) => p.notes.map((n) => n.t1))) + 2;
-  return { id, title: head.TITLE ?? id, artist, kind: "ultrastar", parts, backing: null, guide: [], audioName: head.MP3 || head.AUDIO, duration };
+  const lang = /japan/i.test(head.LANGUAGE ?? "") || parts.some((p) => p.notes.some((n) => hasKana(n.text))) ? "ja" : "en";
+  return { id, title: head.TITLE ?? id, artist, kind: "ultrastar", parts, backing: null, guide: [], audioName: head.MP3 || head.AUDIO, duration, lang };
 }
 
 // ---------------------------------------------------------------- MIDI and .kar
@@ -156,7 +163,7 @@ interface Lyric {
   lineStart: boolean;
 }
 
-function karaokeLyrics(m: MidiFile): { lyrics: Lyric[]; title: string; artist: string } {
+function karaokeLyrics(m: MidiFile): { lyrics: Lyric[]; title: string; artist: string; langTag: string } {
   let title = "";
   let artist = "";
   // the track with the most lyric (or text) events holds the words
@@ -164,9 +171,10 @@ function karaokeLyrics(m: MidiFile): { lyrics: Lyric[]; title: string; artist: s
   for (const t of m.texts) if (!t.text.startsWith("@")) counts.set(`${t.track}:${t.kind}`, (counts.get(`${t.track}:${t.kind}`) ?? 0) + 1);
   const best = [...counts].sort((a, b) => b[1] - a[1])[0];
   const tags = m.texts.filter((t) => t.text.startsWith("@T"));
+  const langTag = m.texts.find((t) => t.text.startsWith("@L"))?.text.slice(2).trim() ?? "";
   if (tags[0]) title = tags[0].text.slice(2).trim();
   if (tags[1]) artist = tags[1].text.slice(2).trim();
-  if (!best || best[1] < 8) return { lyrics: [], title, artist };
+  if (!best || best[1] < 8) return { lyrics: [], title, artist, langTag };
   const [track, kind] = best[0].split(":").map(Number);
   const lyrics: Lyric[] = [];
   let pendingLine = true;
@@ -190,21 +198,33 @@ function karaokeLyrics(m: MidiFile): { lyrics: Lyric[]; title: string; artist: s
     }
     lyrics.push({ t: t.t, text, wordStart: word, lineStart: line });
   }
-  return { lyrics, title, artist };
+  return { lyrics, title, artist, langTag };
 }
 
 /** the track and channel whose note starts best match the lyrics' times */
-function melodyOf(m: MidiFile, lyrics: Lyric[]): { track: number; ch: number } | null {
+function melodyOf(m: MidiFile, lyrics: Lyric[]): { track: number; ch: number; offset: number } | null {
   const keys = new Map<string, number[]>();
   for (const n of m.notes) if (n.ch !== 9) (keys.get(`${n.track}:${n.ch}`) ?? keys.set(`${n.track}:${n.ch}`, []).get(`${n.track}:${n.ch}`)!).push(n.t0);
-  let best: { track: number; ch: number } | null = null;
+  let best: { track: number; ch: number; offset: number } | null = null;
   let bestScore = 0;
-  for (const [k, starts] of keys) {
-    let hit = 0;
+  for (const [k, raw] of keys) {
+    const starts = [...raw].sort((a, b) => a - b);
+    // a karaoke file often shows each word a little before its note: the track's own lead, the
+    // median gap from each lyric to the nearest note start after it within 0.3 s
+    const gaps: number[] = [];
     let j = 0;
     for (const l of lyrics) {
       while (j < starts.length && starts[j] < l.t - 0.06) j++;
-      if (j < starts.length && Math.abs(starts[j] - l.t) <= 0.06) hit++;
+      if (j < starts.length && starts[j] - l.t <= 0.3) gaps.push(starts[j] - l.t);
+    }
+    gaps.sort((a, b) => a - b);
+    const offset = gaps.length > lyrics.length * 0.3 ? Math.max(0, gaps[gaps.length >> 1]) : 0;
+    let hit = 0;
+    j = 0;
+    for (const l of lyrics) {
+      const t = l.t + offset;
+      while (j < starts.length && starts[j] < t - 0.06) j++;
+      if (j < starts.length && Math.abs(starts[j] - t) <= 0.06) hit++;
     }
     const named = /melody|vocal|voice|lead vox|sing/i.test(m.trackNames[Number(k.split(":")[0])] ?? "") ? 1.15 : 1;
     // an accompaniment that plays on every beat hits the lyrics too: a melody has about one
@@ -214,7 +234,7 @@ function melodyOf(m: MidiFile, lyrics: Lyric[]): { track: number; ch: number } |
     if (score > bestScore) {
       bestScore = score;
       const [track, ch] = k.split(":").map(Number);
-      best = { track, ch };
+      best = { track, ch, offset };
     }
   }
   return bestScore > 0.3 ? best : null;
@@ -251,7 +271,7 @@ function monophonic(notes: MidiNote[]): MidiNote[] {
 
 export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileTitle: string, scat = "doo"): Song {
   const m = parseMidi(bytes);
-  const { lyrics, title, artist } = karaokeLyrics(m);
+  const { lyrics, title, artist, langTag } = karaokeLyrics(m);
   const [fArtist, fTitle] = fileTitle.includes(" - ") ? fileTitle.split(" - ", 2) : ["", fileTitle];
   const name = artist || fArtist || "Voice";
   const notes: VNote[] = [];
@@ -259,6 +279,7 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
   const sungKeys = new Set<MidiNote>();
   const mel = lyrics.length ? melodyOf(m, lyrics) : null;
   let missed = 0;
+  if (mel && mel.offset) for (const l of lyrics) l.t += mel.offset;
   if (mel) {
     const line = monophonic(m.notes.filter((n) => n.track === mel.track && n.ch === mel.ch));
     const orig = m.notes.filter((n) => n.track === mel.track && n.ch === mel.ch);
@@ -288,39 +309,63 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
       }
     }
     for (const n of orig) if (sungKeys.has(n)) guide.push(n);
-  } else {
-    // no lyrics: the highest-sounding line of the most melodic track, on a scat syllable
-    const tracks = new Map<string, MidiNote[]>();
-    for (const n of m.notes) if (n.ch !== 9) (tracks.get(`${n.track}:${n.ch}`) ?? tracks.set(`${n.track}:${n.ch}`, []).get(`${n.track}:${n.ch}`)!).push(n);
-    const pick = [...tracks.entries()].sort((a, b) => {
-      const score = (ns: MidiNote[]) => ns.length * (median(ns.map((n) => n.midi)) > 55 ? 1.5 : 1) * (/melody|vocal|lead/i.test(m.trackNames[ns[0].track] ?? "") ? 3 : 1);
-      return score(b[1]) - score(a[1]);
-    })[0];
-    if (pick) {
-      const line = skyline(pick[1].filter((n) => n.midi >= 55));
-      // a piano's runs go far beyond a voice: fold the outliers back toward the middle of the line
-      const mid = median(line.map((n) => n.midi));
-      for (const n of line) {
-        while (n.midi > mid + 9) n.midi -= 12;
-        while (n.midi < mid - 9) n.midi += 12;
-      }
-      let prevEnd = -1;
-      for (const n of line) {
-        const lineStart = n.t0 - prevEnd > 1.2;
-        notes.push({ t0: n.t0, t1: n.t1, midi: n.midi, text: scat, cont: false, wordStart: true, lineStart: lineStart || notes.length === 0 });
-        prevEnd = n.t1;
-      }
-    }
+  }
+  const body = guessBody(name);
+  const songTitle = title ? title.replace(/\b\w+/g, (w) => w[0] + w.slice(1).toLowerCase()) : fTitle;
+  if (!mel && lyrics.length) {
+    // lyrics, but no track starts its notes with them: each word sung for its time at the pitch
+    // the most melodic track sounds then
+    const key = melodyTracks(m)[0]?.key;
+    const tune = key ? tuneOf(m, key).line : [];
+    const lyricNotes: VNote[] = [];
+    let k = 0;
+    lyrics.forEach((l, i) => {
+      const next = lyrics[i + 1]?.t ?? l.t + 1;
+      while (k + 1 < tune.length && tune[k + 1].t0 <= l.t + 0.05) k++;
+      const prev = lyricNotes[lyricNotes.length - 1];
+      lyricNotes.push({ t0: l.t, t1: Math.min(next, l.t + 1.2), midi: tune[k]?.midi ?? prev?.midi ?? 64, text: l.text, cont: false, wordStart: l.wordStart, lineStart: l.lineStart });
+    });
+    return {
+      id,
+      title: songTitle,
+      artist: artist || fArtist,
+      kind: "kar",
+      melodyHit: 0,
+      lang: /jap|jpn|^ja/i.test(langTag) || lyrics.some((l) => hasKana(l.text)) ? "ja" : "en",
+      parts: [{ name, body, notes: lyricNotes }],
+      backing: m,
+      guide: [],
+      duration: m.duration + 1,
+    };
+  }
+  if (!mel) {
+    // no lyrics: the most melodic track, on a scat syllable, until words are put to it
+    const key = melodyTracks(m)[0]?.key ?? null;
+    const sung = key ? singLine(m, key, scat) : { notes: [], used: [] };
+    const used = new Set(sung.used);
+    return {
+      id,
+      title: songTitle,
+      artist: artist || fArtist,
+      kind: "midi",
+      parts: [{ name: `${name} (scat)`, body, notes: sung.notes }],
+      backing: { ...m, notes: m.notes.filter((n) => !used.has(n)) },
+      guide: sung.used,
+      duration: m.duration + 1,
+      lang: "en",
+      midi: m,
+      melodyKey: key ?? undefined,
+    };
   }
   const backing: MidiFile = { ...m, notes: m.notes.filter((n) => !sungKeys.has(n)) };
-  const body = guessBody(name);
   return {
     id,
-    title: title ? title.replace(/\b\w+/g, (w) => w[0] + w.slice(1).toLowerCase()) : fTitle,
+    title: songTitle,
     artist: artist || fArtist,
-    kind: lyrics.length ? "kar" : "midi",
-    melodyHit: lyrics.length ? (mel ? 1 - missed / lyrics.length : 0) : undefined,
-    parts: [{ name: lyrics.length ? name : `${name} (scat)`, body, notes }],
+    kind: "kar",
+    melodyHit: 1 - missed / lyrics.length,
+    lang: /jap|jpn|^ja/i.test(langTag) || lyrics.some((l) => hasKana(l.text)) ? "ja" : "en",
+    parts: [{ name, body, notes }],
     backing,
     guide,
     duration: m.duration + 1,
@@ -333,4 +378,115 @@ export function parseSong(name: string, bytes: Uint8Array): Song {
   if (/\.txt$/i.test(name)) return parseUltraStar(new TextDecoder().decode(bytes), base);
   if (/\.(mid|midi|kar|rmi)$/i.test(name)) return parseMidiSong(bytes, base, base);
   throw new Error(`${name}: not an UltraStar .txt, .kar or .mid file`);
+}
+
+/** a pitched track a voice could sing, with how much it reads as a melody */
+export interface MelodyTrack {
+  key: string;
+  name: string;
+  notes: number;
+  score: number;
+}
+
+/**
+ * The tracks of a MIDI without lyrics that could carry its tune, best first: a single line (few
+ * chords), in a voice's register, named like a melody, busy enough to be the tune.
+ */
+export function melodyTracks(m: MidiFile): MelodyTrack[] {
+  const by = new Map<string, MidiNote[]>();
+  for (const n of m.notes) {
+    if (n.ch === 9) continue;
+    const k = `${n.track}:${n.ch}`;
+    (by.get(k) ?? by.set(k, []).get(k)!).push(n);
+  }
+  const out: MelodyTrack[] = [];
+  for (const [key, ns] of by) {
+    if (ns.length < 12) continue;
+    const sorted = [...ns].sort((a, b) => a.t0 - b.t0);
+    let chords = 0;
+    for (let i = 1; i < sorted.length; i++) if (sorted[i].t0 - sorted[i - 1].t0 < 0.03) chords++;
+    const single = 1 - chords / ns.length;
+    const mid = median(ns.map((n) => n.midi));
+    const register = mid >= 58 && mid <= 82 ? 1 : mid >= 52 && mid <= 88 ? 0.5 : 0.1;
+    const tn = m.trackNames[Number(key.split(":")[0])] ?? "";
+    const named = /melod|vocal|voice|vox|lead|sing|melody/i.test(tn) ? 3 : 1;
+    // a piano-only file carries its tune on top of its chords: a single line of it still counts
+    const score = Math.min(ns.length, 900) * single * single * register * named;
+    out.push({ key, name: tn, notes: ns.length, score });
+  }
+  out.sort((a, b) => b.score - a.score);
+  const keys = out.map((t) => t.key);
+  for (const t of out) t.name = trackLabel(m, t.key, keys);
+  for (const t of out) if (out.filter((x) => x.name === t.name).length > 1) t.name = `${t.name} · ch ${Number(t.key.split(":")[1]) + 1}`;
+  return out;
+}
+
+/** a track's tune as one line, in a voice's register: the top note of each chord */
+function tuneOf(m: MidiFile, key: string): { line: MidiNote[]; used: MidiNote[] } {
+  const ns = m.notes.filter((n) => `${n.track}:${n.ch}` === key);
+  const line = skyline(ns.filter((n) => n.midi >= 50));
+  // a piano's runs go far beyond a voice: fold the outliers back toward the middle of the line
+  const mid = median(line.map((n) => n.midi));
+  for (const n of line) {
+    while (n.midi > mid + 9) n.midi -= 12;
+    while (n.midi < mid - 9) n.midi += 12;
+  }
+  return { line, used: ns };
+}
+
+/** a track's tune on a scat syllable, a line at each breath */
+export function singLine(m: MidiFile, key: string, scat = "doo"): { notes: VNote[]; used: MidiNote[] } {
+  const { line, used } = tuneOf(m, key);
+  const notes: VNote[] = [];
+  let prevEnd = -1;
+  for (const n of line) {
+    notes.push({ t0: n.t0, t1: n.t1, midi: n.midi, text: scat, cont: false, wordStart: true, lineStart: n.t0 - prevEnd > 1.2 || notes.length === 0 });
+    prevEnd = n.t1;
+  }
+  return { notes, used };
+}
+
+/** where a track's tune starts (s) */
+export function tuneStart(m: MidiFile, key: string): number {
+  return tuneOf(m, key).line[0]?.t0 ?? 0;
+}
+
+/**
+ * Words put to a track's tune, one unit a note in order from `from` s: `units` are the lyric's
+ * lines, each of words, each of the pieces sung one to a note (syllables, or morae), "-" or "~"
+ * holding the vowel onto the next note and "_" leaving a note to the instrument. A line starts
+ * on the next note after the last line's, or after a rest where one comes within its first
+ * two notes. Notes after the last word aren't sung.
+ */
+export function wordsToTune(m: MidiFile, key: string, units: string[][][], from: number): { notes: VNote[]; used: MidiNote[]; left: number } {
+  const { line, used } = tuneOf(m, key);
+  let j = line.findIndex((n) => n.t0 >= from - 0.05);
+  if (j < 0) j = line.length;
+  const notes: VNote[] = [];
+  const sungAt = new Set<number>();
+  let left = 0;
+  for (const l of units) {
+    let lineStart = true;
+    for (const w of l) {
+      let wordStart = true;
+      for (const u of w) {
+        if (j >= line.length) {
+          left++;
+          continue;
+        }
+        const n = line[j++];
+        if (u === "_") continue;
+        const hold = u === "-" || u === "~";
+        notes.push({ t0: n.t0, t1: n.t1, midi: n.midi, text: hold ? "" : u, cont: hold && notes.length > 0, wordStart: !hold && wordStart, lineStart: lineStart && !hold });
+        sungAt.add(j - 1);
+        if (!hold) {
+          wordStart = false;
+          lineStart = false;
+        }
+      }
+    }
+  }
+  // the instrument plays the notes the voice doesn't sing
+  const sungTimes = new Set([...sungAt].map((k) => Math.round(line[k].t0 * 1000)));
+  return { notes, used: used.filter((n) => sungTimes.has(Math.round(n.t0 * 1000))), left };
 }

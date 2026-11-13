@@ -6,6 +6,7 @@
 import { lyricsToSyllables, planSong, type Syllable, type SungNote, type Gesture } from "../wasm/engine.ts";
 import type { BodyMix } from "../wasm/types.ts";
 import type { VNote } from "./song.ts";
+import { japaneseText } from "./japanese.ts";
 
 /** the planned gestures start this long before the phrase's first note (consonants come first) */
 export const PRE = 0.4;
@@ -33,9 +34,13 @@ function clean(text: string): string {
     .trim();
 }
 
-function syllables(text: string): Syllable[] {
+function syllables(text: string, lang: "en" | "ja" = "en", notes?: number): Syllable[] {
   const t = clean(text);
   if (!t || !/[\p{L}\p{N}]/u.test(t)) return [];
+  if (lang === "ja") {
+    const j = japaneseText(t, notes);
+    if (j) return j.filter((s) => !s.melisma || notes !== undefined);
+  }
   try {
     return lyricsToSyllables(t).filter((s) => !s.melisma);
   } catch {
@@ -63,7 +68,7 @@ function phrasesOf(notes: VNote[]): VNote[][] {
 }
 
 /** a phrase's notes → sung notes, one syllable each (a note split where a group has more syllables) */
-function sungNotes(phrase: VNote[], shift: number): { midi: number; t0: number; t1: number; syl: Syllable }[] {
+function sungNotes(phrase: VNote[], shift: number, lang: "en" | "ja"): { midi: number; t0: number; t1: number; syl: Syllable }[] {
   // words, each of groups: a fragment and the continuations after it
   const words: VNote[][][] = [];
   for (const n of phrase) {
@@ -78,8 +83,9 @@ function sungNotes(phrase: VNote[], shift: number): { midi: number; t0: number; 
     const texts = groups.map((g) => g.map((n) => n.text).join(""));
     // the whole word through the dictionary first; where its syllables don't fall one to a group,
     // each group alone
-    const whole = groups.length > 1 ? syllables(texts.join("")) : [];
-    const per = whole.length === groups.length ? whole.map((s) => [s]) : texts.map(syllables);
+    // Japanese: each mora is a note, and ん or ー a held vowel, so the whole word fits its notes
+    const whole = groups.length > 1 ? syllables(texts.join(""), lang, lang === "ja" ? groups.length : undefined) : [];
+    const per = whole.length === groups.length ? whole.map((s) => [s]) : texts.map((x, gi) => syllables(x, lang, lang === "ja" ? groups[gi].length : undefined));
     const wordOut: { midi: number; t0: number; t1: number; syl: Syllable }[] = [];
     groups.forEach((g, gi) => {
       const syls = per[gi];
@@ -121,13 +127,16 @@ export interface PlanOptions {
   octave: number;
   /** vibrato on held vowels (cents) */
   vibrato: number;
+  /** semitones on top of the octave */
+  transpose?: number;
+  lang?: "en" | "ja";
 }
 
 export function planPart(notes: VNote[], o: PlanOptions): Phrase[] {
-  const shift = 12 * o.octave;
+  const shift = 12 * o.octave + (o.transpose ?? 0);
   const phrases: Phrase[] = [];
   for (const p of phrasesOf(notes)) {
-    const sung = sungNotes(p, shift);
+    const sung = sungNotes(p, shift, o.lang ?? "en");
     if (!sung.length) continue;
     const start = sung[0].t0;
     // planSong's notes are back to back: each lasts until the next starts (short gaps inside a

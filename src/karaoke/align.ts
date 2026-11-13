@@ -14,7 +14,7 @@
  * MIDI's melody, which the backing mutes so it doesn't double the voice. Octaves are ignored on
  * purpose: UltraStar files often put a part an octave off.
  */
-import type { MidiFile, MidiNote } from "./midifile.ts";
+import { trackLabel, type MidiFile, type MidiNote } from "./midifile.ts";
 
 export interface Alignment {
   ratio: number;
@@ -235,7 +235,9 @@ export function align(sung: SungRef[], m: MidiFile, range = 90): Alignment {
     tracks.push({ key, name: m.trackNames[Number(key.split(":")[0])] || `Track ${key.split(":")[0]}`, score: warped, notes: line.length });
     if (!best || warped > best.score) best = { ...r, score: warped, key, warp };
   }
-  // tracks of one name (a format 0 file names them all after the song): tell them apart by channel
+  // tracks of one name (a format 0 file names them all after the song): by their instrument
+  const keys = tracks.map((t) => t.key);
+  for (const t of tracks) t.name = trackLabel(m, t.key, keys);
   for (const t of tracks) if (tracks.filter((x) => x.name === t.name).length > 1) t.name = `${t.name} · ch ${Number(t.key.split(":")[1]) + 1}`;
   tracks.sort((a, b) => b.score - a.score);
   if (!best) return { ratio: 1, offset: 0, transpose: 0, melody: null, warp: null, score: 0, tracks };

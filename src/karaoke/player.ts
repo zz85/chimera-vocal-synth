@@ -7,7 +7,7 @@
  */
 import workletUrl from "../worklet/processor.ts?worker&url";
 import { chimeraModule } from "../wasm/chimera.ts";
-import type { BodyMix } from "../wasm/types.ts";
+import type { BodyMix, VoiceSource } from "../wasm/types.ts";
 import type { FromWorklet, ToWorklet, TelemetryMessage } from "../worklet/protocol.ts";
 import type { MidiFile, MidiNote } from "./midifile.ts";
 import { PRE, type Phrase } from "./plan.ts";
@@ -23,6 +23,8 @@ const TICK_MS = 40;
 export class Voice {
   readonly node: AudioWorkletNode;
   readonly gain: GainNode;
+  readonly pan: StereoPannerNode;
+  body: BodyMix;
   latest: TelemetryMessage | null = null;
   phrases: Phrase[] = [];
   /** the next phrase to send */
@@ -30,15 +32,27 @@ export class Voice {
   muted = false;
   private id = 0;
 
-  constructor(ctx: AudioContext, out: AudioNode, readonly body: BodyMix) {
+  constructor(ctx: AudioContext, out: AudioNode, body: BodyMix) {
+    this.body = body;
     this.node = new AudioWorkletNode(ctx, "chimera", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { module: chimeraModule() } });
     this.gain = ctx.createGain();
-    this.node.connect(this.gain).connect(out);
+    this.pan = ctx.createStereoPanner();
+    this.node.connect(this.gain).connect(this.pan).connect(out);
     this.node.port.onmessage = (e: MessageEvent<FromWorklet>) => {
       if (e.data.type === "telemetry") this.latest = e.data;
       else if (e.data.type === "error") console.error("karaoke voice:", e.data.message);
     };
     this.send({ type: "body", body });
+  }
+
+  setBody(b: BodyMix): void {
+    if (b.female === this.body.female && b.child === this.body.child) return;
+    this.body = b;
+    this.send({ type: "body", body: b });
+  }
+
+  setSource(values: Partial<VoiceSource>): void {
+    this.send({ type: "source", values });
   }
 
   send(m: ToWorklet): void {
@@ -59,6 +73,7 @@ export class Voice {
     this.node.port.onmessage = null;
     this.node.disconnect();
     this.gain.disconnect();
+    this.pan.disconnect();
   }
 }
 
@@ -77,6 +92,7 @@ export class KaraokePlayer {
   readonly ctx: AudioContext;
   private master: GainNode;
   private voiceBus: GainNode;
+  private wet: GainNode;
   readonly backingGain: GainNode;
   /** the mix as it leaves, for level readouts */
   readonly meter: AnalyserNode;
@@ -116,6 +132,7 @@ export class KaraokePlayer {
     const dry = ctx.createGain();
     const wet = ctx.createGain();
     wet.gain.value = 0.22;
+    this.wet = wet;
     const verb = ctx.createConvolver();
     verb.buffer = hall(ctx, 1.9);
     this.voiceBus.connect(dry).connect(this.master);
@@ -139,24 +156,44 @@ export class KaraokePlayer {
     this.backingGain.gain.value = v;
   }
 
-  /** Replace the voices: one per body, each with its phrases. */
+  /** Replace the voices' phrases: one voice per part (kept from before where it exists), each with its body. */
   setParts(parts: { body: BodyMix; phrases: Phrase[]; muted: boolean }[]): void {
     const t = this.time();
     const was = this.playing;
     if (was) this.halt();
-    // keep a voice whose body is unchanged (its node and telemetry stay)
     const old = this.voices;
     this.voices = parts.map((p, i) => {
-      const keep = old[i] && old[i].body.female === p.body.female && old[i].body.child === p.body.child ? old[i] : null;
-      const v = keep ?? new Voice(this.ctx, this.voiceBus, p.body);
+      const v = old[i] ?? new Voice(this.ctx, this.voiceBus, p.body);
+      v.setBody(p.body);
       v.phrases = p.phrases;
       v.muted = p.muted;
-      v.gain.gain.value = p.muted ? 0 : 1;
       return v;
     });
-    for (const v of old) if (!this.voices.includes(v)) v.dispose();
+    for (const v of old.slice(parts.length)) v.dispose();
     if (was) void this.play(t);
     else this.pausedAt = t;
+  }
+
+  /** A part's voice and its place in the mix, at once (no new plan): its level, its pan, its source. */
+  setMix(i: number, m: { level: number; pan: number; muted: boolean; source: Partial<VoiceSource> }): void {
+    const v = this.voices[i];
+    if (!v) return;
+    const now = this.ctx.currentTime;
+    v.gain.gain.setTargetAtTime(m.muted ? 0 : m.level, now, 0.02);
+    v.pan.pan.setTargetAtTime(m.pan, now, 0.02);
+    v.setSource(m.source);
+  }
+
+  /** the voices' share of the reverb (0 … 1) */
+  setRoom(wet: number): void {
+    this.wet.gain.setTargetAtTime(wet, this.ctx.currentTime, 0.05);
+  }
+
+  /** stop and go back to the start, for a new song */
+  reset(): void {
+    if (this.playing) this.halt();
+    this.pausedAt = 0;
+    this.onState?.();
   }
 
   /** The backing as MIDI, and the melody guide played quietly where `guide` is given. */

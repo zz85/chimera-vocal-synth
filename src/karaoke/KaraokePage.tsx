@@ -9,6 +9,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Screen } from "../ui/components/Screen.tsx";
 import { Segmented, Toggle, Slider } from "../ui/components/Controls.tsx";
 import { getModel } from "../ui/useModel.ts";
+import { bodyLabel } from "../ui/body.ts";
 import { VoiceModel } from "../ui/analysis.ts";
 import { mouthWords } from "../ui/mouthWords.ts";
 import { V } from "../ui/colors.ts";
@@ -21,22 +22,19 @@ import { planPart, type Phrase } from "./plan.ts";
 import { KaraokePlayer, SOUNDFONTS } from "./player.ts";
 import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
 import { align, applyAlignment, nudgeRatio, rescore, type Alignment } from "./align.ts";
+import { BODY_PRESETS, STYLES, bodyMix, defaultSettings, nearestPreset, presetOf, shiftOf, sourcePatch, styleOf, type PartSettings } from "./voices.ts";
+import { loadWords, saveWords, withWords, type Words } from "./words.ts";
+import { melodyTracks, singLine, tuneStart } from "./song.ts";
 import { loadLakh, searchLakh, lakhPath, titleWords, qualityNote, type LakhRow } from "./lakh.ts";
 import "./karaoke.css";
 
 const AnatomyView3D = lazy(() => import("../ui/components/AnatomyView3D.tsx").then((m) => ({ default: m.AnatomyView3D })));
 
 const BASE = `${import.meta.env.BASE_URL}shows/karaoke/`;
-const BODIES: Record<BodyName, BodyMix> = { male: { female: 0, child: 0 }, female: { female: 1, child: 0 }, child: { female: 0.5, child: 1 } };
 const PART_COLORS = [V.blue, V.pink, V.green, V.amber];
 const VIEW: ViewFlags = { pressure: true, particles: true, grid: false, calipers: false };
 const dict = new EnglishG2P();
 
-interface PartSettings {
-  body: BodyName;
-  octave: number;
-  muted: boolean;
-}
 
 interface Entry {
   file: string;
@@ -108,6 +106,17 @@ function loadSaved(song: Song): SavedOverlay | null {
   }
 }
 
+const voicesKey = (song: Song) => `chimera-karaoke:voices:${song.id}`;
+function loadVoices(song: Song): Partial<PartSettings>[] | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(voicesKey(song)) ?? "null");
+    return Array.isArray(v) && v.length === song.parts.length ? v : null;
+  } catch {
+    return null;
+  }
+}
+const saveVoices = (song: Song, s: PartSettings[]) => localStorage.setItem(voicesKey(song), JSON.stringify(s));
+
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
 export function KaraokePage() {
@@ -120,7 +129,8 @@ export function KaraokePage() {
   const [backingOn, setBackingOn] = useState(true);
   const [guide, setGuide] = useState(false);
   const [heads, setHeads] = useState(true);
-  const [vibrato, setVibrato] = useState(35);
+  const [room, setRoom] = useState(0.22);
+  const [openPart, setOpenPart] = useState<number | null>(null);
   const [voiceLevel, setVoiceLevel] = useState(1);
   const [backingLevel, setBackingLevel] = useState(0.7);
   const [font, setFont] = useState(SOUNDFONTS[0]);
@@ -131,6 +141,8 @@ export function KaraokePage() {
   const phrasesRef = useRef<Phrase[][]>([]);
   const [dragging, setDragging] = useState(false);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  /** the words put to the open MIDI's tune, and how they fit */
+  const [words, setWords] = useState<{ w: Words; pieces: number; left: number } | null>(null);
   const [aligning, setAligning] = useState<string | null>(null);
   const shiftRef = useRef(false);
   /** names of MIDI files whose path doesn't give one (Lakh), by path */
@@ -224,7 +236,9 @@ export function KaraokePage() {
   // read a song when it's picked
   const open = useCallback(
     async (file: string, fresh?: Entry) => {
-      player?.pause();
+      // a new song starts from the top
+      player?.reset();
+      setEpoch((x) => x + 1);
       setCurrent(file);
       setAudioName(null);
       player?.setAudio(null);
@@ -315,6 +329,35 @@ export function KaraokePage() {
     });
   const firstSung = song ? Math.min(...song.parts.map((p) => p.notes[0]?.t0 ?? Infinity)) : 0;
 
+  // words for a MIDI without lyrics: put them to the tune (or, with none, scat the track chosen)
+  const applyWords = (w: Words | null, key?: string) => {
+    if (!song?.midi) return;
+    if (!w || !w.text.trim()) {
+      const k = key ?? w?.key ?? song.melodyKey;
+      if (!k) return;
+      const sung = singLine(song.midi, k);
+      const used = new Set(sung.used);
+      saveWords(song, w && { ...w, text: "" });
+      setWords(null);
+      replaceSong({ ...song, lang: "en", melodyKey: k, parts: [{ ...song.parts[0], name: song.parts[0].name.replace(/( \(scat\))?$/, " (scat)"), notes: sung.notes }], backing: { ...song.midi, notes: song.midi.notes.filter((n) => !used.has(n)) }, guide: sung.used });
+      return;
+    }
+    const r = withWords(song, w);
+    saveWords(song, w);
+    setWords({ w, pieces: r.pieces, left: r.left });
+    replaceSong(r.song);
+  };
+  // a MIDI's saved words come back as it opens
+  const wordsFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!song || song.kind !== "midi" || !song.midi || !dictReady || wordsFor.current === song.id) return;
+    wordsFor.current = song.id;
+    setWords(null);
+    const w = loadWords(song);
+    if (w?.text.trim()) applyWords(w);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song, dictReady]);
+
   // a backing from Lakh: the files named like the song, each lined up and scored
   const [finder, setFinder] = useState<Finder | null>(null);
   useEffect(() => setFinder(null), [song]);
@@ -354,22 +397,51 @@ export function KaraokePage() {
     attach(s, lakhPath(c.row.md5), c.bytes, null);
   };
 
-  // each part's body and octave, from the song's own guess
+  // each part's voice: what this browser kept for the song, else the song's own guess
+  const partsKey = song ? `${song.id}:${song.parts.length}` : "";
   useEffect(() => {
     (window as unknown as { __karaokeSong: Song | null }).__karaokeSong = song;
-    if (!song) return;
-    setSettings(song.parts.map((p) => ({ body: p.body, octave: autoOctave(p.notes, p.body), muted: false })));
   }, [song]);
+  useEffect(() => {
+    if (!song) return;
+    const kept = loadVoices(song);
+    setSettings(song.parts.map((p, i) => (kept?.[i] ? { ...defaultSettings(p.body, 0), ...kept[i] } : defaultSettings(p.body, autoOctave(p.notes, p.body)))));
+    // a new song's words come with it; the same song re-read keeps its voices
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partsKey]);
+  useEffect(() => {
+    if (song && settings.length === song.parts.length) saveVoices(song, settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
+
+  // what the plan depends on settles a moment after a slider stops moving
+  const planKey = settings.map((x) => [x.female, x.child, shiftOf(x), x.vibrato].join(",")).join("|");
+  const [planned, setPlanned] = useState({ key: "", settings: [] as PartSettings[] });
+  useEffect(() => {
+    const id = setTimeout(() => setPlanned({ key: planKey, settings }), planned.settings.length === settings.length ? 220 : 0);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planKey]);
 
   // plan the parts and hand them to the player
   useEffect(() => {
-    if (!song || !player || !dictReady || settings.length !== song.parts.length) return;
+    const ps = planned.settings;
+    if (!song || !player || !dictReady || ps.length !== song.parts.length) return;
     player.duration = Math.max(song.duration, (backing?.duration ?? 0) + 1);
-    const phrases = song.parts.map((p, i) => planPart(p.notes, { body: BODIES[settings[i].body], octave: settings[i].octave, vibrato }));
+    const phrases = song.parts.map((p, i) => planPart(p.notes, { body: bodyMix(ps[i]), octave: ps[i].octave, transpose: ps[i].transpose, vibrato: ps[i].vibrato, lang: song.lang }));
     phrasesRef.current = phrases;
-    player.setParts(song.parts.map((_, i) => ({ body: BODIES[settings[i].body], phrases: phrases[i], muted: settings[i].muted })));
+    player.setParts(song.parts.map((_, i) => ({ body: bodyMix(ps[i]), phrases: phrases[i], muted: ps[i].muted })));
+    setMixTick((n) => n + 1);
     setTick((n) => n + 1);
-  }, [song, player, dictReady, settings, vibrato, backing]);
+  }, [song, player, dictReady, planned, backing]);
+
+  // the voice and the mix follow the sliders at once
+  const [mixTick, setMixTick] = useState(0);
+  useEffect(() => {
+    if (!player) return;
+    settings.forEach((x, i) => player.setMix(i, { level: x.level, pan: x.pan, muted: x.muted, source: sourcePatch(x) }));
+  }, [player, settings, mixTick]);
+  useEffect(() => player?.setRoom(room), [player, room]);
 
   // the backing (and the melody guide)
   useEffect(() => {
@@ -379,7 +451,7 @@ export function KaraokePage() {
       if (song.guide.length) guideNotes = song.guide;
       else if (placed?.melody.length) guideNotes = placed.melody;
       else
-        guideNotes = song.parts.flatMap((p, i) => (settings[i].muted ? [] : p.notes.map((n) => ({ t0: n.t0, t1: n.t1, track: 0, ch: 15, midi: n.midi + 12 * settings[i].octave, vel: 80 }))));
+        guideNotes = song.parts.flatMap((p, i) => (settings[i].muted ? [] : p.notes.map((n) => ({ t0: n.t0, t1: n.t1, track: 0, ch: 15, midi: n.midi + shiftOf(settings[i]), vel: 80 }))));
     }
     const midi = backingOn ? backing : null;
     if (midi || guideNotes) {
@@ -456,6 +528,8 @@ export function KaraokePage() {
   });
 
   const setPart = (i: number, patch: Partial<PartSettings>) => setSettings((s) => s.map((x, k) => (k === i ? { ...x, ...patch } : x)));
+  const replaceSong = (s: Song) => setEntries((list) => list.map((x) => (x.file === current ? { ...x, song: s } : x)));
+  const setLang = (lang: "en" | "ja") => song && replaceSong({ ...song, lang });
 
   return (
     <div
@@ -536,11 +610,11 @@ export function KaraokePage() {
                 {song.parts.map((p, i) =>
                   settings[i] ? (
                     <Head
-                      key={`${song.id}:${i}:${settings[i].body}`}
+                      key={`${song.id}:${i}:${planned.settings[i] ? `${planned.settings[i].female},${planned.settings[i].child}` : ""}`}
                       player={player}
                       index={i}
                       name={p.name}
-                      body={settings[i].body}
+                      body={planned.settings[i] ? bodyMix(planned.settings[i]) : bodyMix(settings[i])}
                       notes={p.notes}
                       color={PART_COLORS[i % PART_COLORS.length]}
                       facing={i > 0 && i === song.parts.length - 1 ? -1 : 1}
@@ -560,29 +634,29 @@ export function KaraokePage() {
           <Screen title="Voices" sub={song.kind === "ultrastar" ? "UltraStar" : song.kind === "kar" ? "Karaoke MIDI" : "MIDI, scat"}>
             {song.parts.map((p, i) =>
               settings[i] ? (
-                <div key={i} className="k-part" style={{ "--part": PART_COLORS[i % PART_COLORS.length] } as React.CSSProperties}>
-                  <div className="k-part-name">{p.name}</div>
-                  <Segmented<BodyName>
-                    label={`${p.name} body`}
-                    value={settings[i].body}
-                    onChange={(b) => setPart(i, { body: b, octave: autoOctave(p.notes, b) })}
-                    options={[
-                      { value: "male", label: "Male" },
-                      { value: "female", label: "Female" },
-                      { value: "child", label: "Child" },
-                    ]}
-                  />
-                  <div className="k-octave">
-                    <span>Octave</span>
-                    <button onClick={() => setPart(i, { octave: settings[i].octave - 1 })}>−</button>
-                    <output>{settings[i].octave > 0 ? `+${settings[i].octave}` : settings[i].octave}</output>
-                    <button onClick={() => setPart(i, { octave: settings[i].octave + 1 })}>+</button>
-                    <Toggle label="Mute" checked={settings[i].muted} onChange={(m) => setPart(i, { muted: m })} />
-                  </div>
-                </div>
+                <PartPanel
+                  key={i}
+                  name={p.name}
+                  color={PART_COLORS[i % PART_COLORS.length]}
+                  s={settings[i]}
+                  open={openPart === i}
+                  onOpen={() => setOpenPart(openPart === i ? null : i)}
+                  set={(patch) => setPart(i, patch)}
+                  autoOctave={(b) => autoOctave(p.notes, b)}
+                />
               ) : null,
             )}
-            <Slider label="Vibrato" value={vibrato} min={0} max={80} step={5} onChange={(v) => setVibrato(Math.round(v / 5) * 5)} format={(v) => `${Math.round(v)} ct`} />
+            {song.kind !== "midi" && (
+              <label className="k-select">
+                <span>Lyrics are</span>
+                <select value={song.lang} onChange={(e) => setLang(e.target.value as "en" | "ja")}>
+                  <option value="en">English</option>
+                  <option value="ja">Japanese (kana or romaji)</option>
+                </select>
+              </label>
+            )}
+            {song.kind === "midi" && song.midi && <WordsPanel song={song} words={words} onApply={applyWords} />}
+            <Slider label="Room" value={room} min={0} max={0.8} onChange={setRoom} format={(v) => `${Math.round(v * 100)}%`} />
             <Slider label="Voices" value={voiceLevel} min={0} max={1.5} onChange={setVoiceLevel} format={(v) => `${Math.round(v * 100)}%`} />
             <div className="k-sep" />
             {song.kind === "ultrastar" && (
@@ -662,12 +736,15 @@ export function KaraokePage() {
 }
 
 /** one part's head, moving from its voice's live telemetry */
-function Head(props: { player: KaraokePlayer; index: number; name: string; body: BodyName; notes: VNote[]; color: string; facing: 1 | -1; epoch: number }) {
-  const { player, index, notes } = props;
+function Head(props: { player: KaraokePlayer; index: number; name: string; body: BodyMix; notes: VNote[]; color: string; facing: 1 | -1; epoch: number }) {
+  const { player, index } = props;
+  // the words can change under the same head (words put to a MIDI's tune): read them live
+  const notesRef = useRef(props.notes);
+  notesRef.current = props.notes;
   const epochRef = useRef(props.epoch);
   epochRef.current = props.epoch;
   const feed = useMemo<HeadFeed>(() => {
-    const model = getModel(BODIES[props.body], player.ctx.sampleRate);
+    const model = getModel(props.body, player.ctx.sampleRate);
     return {
       model,
       view: VIEW,
@@ -688,6 +765,7 @@ function Head(props: { player: KaraokePlayer; index: number; name: string; body:
       mouthWords(
         () => {
           if (!player.playing) return null;
+          const notes = notesRef.current;
           const t = player.time();
           let k = -1;
           let lo = 0, hi = notes.length - 1;
@@ -711,7 +789,7 @@ function Head(props: { player: KaraokePlayer; index: number; name: string; body:
     [],
   );
   return (
-    <Screen className="duet-head" focus title={props.name} sub={props.body} label={`${props.name}, ${props.body} voice, in 3D`}>
+    <Screen className="duet-head" focus title={props.name} sub={bodyLabel(props.body)} label={`${props.name}, ${bodyLabel(props.body)} voice, in 3D`}>
       <Suspense fallback={null}>
         <AnatomyView3D feed={feed} readouts={false} overlay={overlay} />
       </Suspense>
@@ -811,7 +889,7 @@ function Roll(props: { song: Song; player: KaraokePlayer; settings: PartSettings
       const t = player.time();
       const before = 2.5, after = 7.5;
       const x = (s: number) => ((s - (t - before)) / (before + after)) * w;
-      const parts = song.parts.map((p, i) => ({ notes: p.notes, shift: 12 * (settings[i]?.octave ?? 0), color: PART_COLORS[i % PART_COLORS.length], muted: settings[i]?.muted }));
+      const parts = song.parts.map((p, i) => ({ notes: p.notes, shift: settings[i] ? shiftOf(settings[i]) : 0, color: PART_COLORS[i % PART_COLORS.length], muted: settings[i]?.muted }));
       let lo = 127, hi = 0;
       for (const p of parts) for (const n of p.notes) if (n.t1 > t - before && n.t0 < t + after) {
         lo = Math.min(lo, n.midi + p.shift);
@@ -991,5 +1069,133 @@ function QualityBar(props: { q: number }) {
         <i key={i} className={i <= lit ? "on" : ""} />
       ))}
     </span>
+  );
+}
+
+/** one part's voice: its body, pitch and level, with the voice's own settings under Tweak */
+function PartPanel(props: { name: string; color: string; s: PartSettings; open: boolean; onOpen: () => void; set: (p: Partial<PartSettings>) => void; autoOctave: (b: BodyName) => number }) {
+  const { s, set } = props;
+  const style = styleOf(s);
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const setBody = (female: number, child: number) => set({ female, child, body: presetOf(female, child) });
+  return (
+    <div className="k-part" style={{ "--part": props.color } as React.CSSProperties}>
+      <div className="k-part-name">{props.name}</div>
+      <Segmented<BodyName>
+        label={`${props.name} body`}
+        value={s.body}
+        onChange={(b) => set({ body: b, ...BODY_PRESETS[b], octave: props.autoOctave(b) })}
+        options={[
+          { value: "male", label: "Male" },
+          { value: "female", label: "Female" },
+          { value: "child", label: "Child" },
+        ]}
+      />
+      <div className="k-octave">
+        <span>Octave</span>
+        <button aria-label="Octave down" onClick={() => set({ octave: s.octave - 1 })}>−</button>
+        <output>{s.octave > 0 ? `+${s.octave}` : s.octave}</output>
+        <button aria-label="Octave up" onClick={() => set({ octave: s.octave + 1 })}>+</button>
+        <Toggle label="Mute" checked={s.muted} onChange={(m) => set({ muted: m })} />
+      </div>
+      <label className="k-select">
+        <span>Voice</span>
+        <select value={style ?? ""} onChange={(e) => e.target.value && set({ ...STYLES[e.target.value] })}>
+          {!style && <option value="">Your own</option>}
+          {Object.keys(STYLES).map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button className="k-tweak" aria-expanded={props.open} onClick={props.onOpen}>
+        {props.open ? "▾" : "▸"} Tweak the voice
+      </button>
+      {props.open && (
+        <div className="k-tweaks">
+          <Slider label="Female" value={s.female} min={0} max={1} onChange={(v) => setBody(Math.round(v * 100) / 100, s.child)} format={pct} />
+          <Slider label="Child" value={s.child} min={0} max={1} onChange={(v) => setBody(s.female, Math.round(v * 100) / 100)} format={pct} />
+          <div className="k-octave">
+            <span>Transpose</span>
+            <button aria-label="Semitone down" onClick={() => set({ transpose: s.transpose - 1 })}>−</button>
+            <output>{s.transpose > 0 ? `+${s.transpose}` : s.transpose}</output>
+            <button aria-label="Semitone up" onClick={() => set({ transpose: s.transpose + 1 })}>+</button>
+            <span>semitones</span>
+          </div>
+          <Slider label="Pressed" value={s.tension} min={0} max={1} onChange={(v) => set({ tension: v })} format={pct} />
+          <Slider label="Bright" value={s.brightness} min={0} max={1} onChange={(v) => set({ brightness: v })} format={pct} />
+          <Slider label="Breathy" value={s.breathiness} min={0} max={1} onChange={(v) => set({ breathiness: v })} format={pct} />
+          <Slider label="Rough" value={s.roughness} min={0} max={1} onChange={(v) => set({ roughness: v })} format={pct} />
+          <Slider label="Creak" value={s.fry} min={0} max={1} onChange={(v) => set({ fry: v })} format={pct} />
+          <Slider label="Vibrato" value={s.vibrato} min={0} max={100} onChange={(v) => set({ vibrato: Math.round(v) })} format={(v) => `${Math.round(v)} ct`} />
+          <Slider label="Vibrato rate" value={s.vibratoRate} min={3} max={8} onChange={(v) => set({ vibratoRate: Math.round(v * 10) / 10 })} format={(v) => `${v.toFixed(1)} Hz`} />
+          <Slider label="Glide" value={s.glide} min={0.005} max={0.3} log onChange={(v) => set({ glide: v })} format={(v) => `${Math.round(v * 1000)} ms`} />
+          <Slider label="Wander" value={s.drift} min={0} max={20} onChange={(v) => set({ drift: Math.round(v * 2) / 2 })} format={(v) => `${v.toFixed(1)} ct`} />
+          <Slider label="Level" value={s.level} min={0} max={2} onChange={(v) => set({ level: v })} format={pct} />
+          <Slider label="Pan" value={s.pan} min={-1} max={1} onChange={(v) => set({ pan: Math.abs(v) < 0.04 ? 0 : v })} format={(v) => (Math.abs(v) < 0.04 ? "centre" : v < 0 ? `${Math.round(-v * 100)}% L` : `${Math.round(v * 100)}% R`)} />
+          <button className="k-tweak" onClick={() => set({ ...STYLES.Natural, ...BODY_PRESETS[nearestPreset(s)], body: nearestPreset(s), transpose: 0, level: 1, pan: 0 })}>
+            Reset this voice
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** words for a MIDI without lyrics: the tune's track, the language, the lyrics and where they start */
+function WordsPanel(props: { song: Song; words: { w: Words; pieces: number; left: number } | null; onApply: (w: Words | null, key?: string) => void }) {
+  const { song } = props;
+  const tracks = useMemo(() => (song.midi ? melodyTracks(song.midi) : []), [song.midi]);
+  const key = props.words?.w.key ?? song.melodyKey ?? tracks[0]?.key ?? "";
+  const [text, setText] = useState(props.words?.w.text ?? "");
+  const [lang, setLang] = useState<"en" | "ja">(props.words?.w.lang ?? "en");
+  const [from, setFrom] = useState<number | null>(props.words?.w.from ?? null);
+  useEffect(() => {
+    setText(props.words?.w.text ?? "");
+    setLang(props.words?.w.lang ?? "en");
+    setFrom(props.words?.w.from ?? null);
+    // the panel shows the words of the song it opens with
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song.id, !!props.words]);
+  const start = Math.round((from ?? (song.midi && key ? tuneStart(song.midi, key) : 0)) * 100) / 100;
+  const apply = (k = key) => props.onApply({ text, lang, key: k, from: from ?? (song.midi ? tuneStart(song.midi, k) : 0) }, k);
+  return (
+    <div className="k-words">
+      <div className="k-part-name">Words</div>
+      <label className="k-select">
+        <span>Tune on</span>
+        <select value={key} onChange={(e) => (text.trim() ? apply(e.target.value) : props.onApply(null, e.target.value))}>
+          {tracks.map((t) => (
+            <option key={t.key} value={t.key}>
+              {t.name} ({t.notes})
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="k-select">
+        <span>Language</span>
+        <select value={lang} onChange={(e) => setLang(e.target.value as "en" | "ja")}>
+          <option value="en">English</option>
+          <option value="ja">Japanese (kana or romaji)</option>
+        </select>
+      </label>
+      <textarea className="k-lyrics-in" rows={6} placeholder={"Paste the lyrics, a line each.\nOne syllable (or mora) a note; - holds a note, _ leaves one to the band."} value={text} onChange={(e) => setText(e.target.value)} />
+      <label className="k-select">
+        <span>First word at</span>
+        <input className="k-num" type="number" step={0.1} min={0} value={start} onChange={(e) => setFrom(Number(e.target.value))} />
+      </label>
+      <div className="k-octave">
+        <button className="k-auto" onClick={() => apply()}>
+          Sing these words
+        </button>
+        {props.words && (
+          <button className="k-auto" onClick={() => props.onApply(null, key)}>
+            Back to scat
+          </button>
+        )}
+      </div>
+      {props.words && <p className={`k-hint${props.words.left ? " warn" : ""}`}>{props.words.left ? `${props.words.left} of ${props.words.pieces} syllables are past the tune's last note: add _ for notes the band plays alone, or start later.` : `${props.words.pieces} syllables on the tune.`}</p>}
+    </div>
   );
 }

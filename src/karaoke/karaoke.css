@@ -376,3 +376,48 @@ button.k-random {
   width: 100%;
   background: none;
 }
+button.k-tweak {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--blue-mid);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+button.k-tweak:hover {
+  color: var(--white);
+}
+.k-tweaks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--frame);
+}
+.k-words {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-left: 3px solid var(--green);
+  background: rgba(91, 227, 129, 0.05);
+}
+.k-lyrics-in {
+  width: 100%;
+  resize: vertical;
+  background: #000;
+  color: var(--white);
+  border: 1px solid var(--frame);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px;
+}
+.k-num {
+  width: 80px;
+  background: #000;
+  color: var(--white);
+  border: 1px solid var(--frame);
+  padding: 3px;
+}
