@@ -667,9 +667,10 @@ export function KaraokePage() {
         .catch(() => setSynthState("failed"));
     }
     player.setBacking(midi, guideNotes);
-    // the guide follows the voices' pitch; nothing else of the voices restarts the backing
+    // the guide follows the voices' pitch; nothing else of the voices restarts the backing. The
+    // settings' count is here so the backing starts once the parts' settings are set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [song, player, backingOn, guide, guide ? settings.map((x) => `${shiftOf(x)},${x.muted}`).join("|") : "", backingPlay, placed]);
+  }, [song, player, settings.length, backingOn, guide, guide ? settings.map((x) => `${shiftOf(x)},${x.muted}`).join("|") : "", backingPlay, placed]);
 
   useEffect(() => {
     player?.setVolume(volume);
