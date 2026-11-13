@@ -421,3 +421,72 @@ button.k-tweak:hover {
   border: 1px solid var(--frame);
   padding: 3px;
 }
+/* the stage: the voices biggest, the band and the visual beside them */
+.k-stage {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.k-stage > * {
+  min-height: 0;
+  min-width: 0;
+}
+.k-stage.heads.band,
+.k-stage.heads.visual {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+.k-stage.heads.band.visual {
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+.k-stage.heads.band.visual > .k-heads {
+  grid-row: 1 / 3;
+}
+.k-stage.band.visual:not(.heads) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.k-stage > .k-heads {
+  height: 100%;
+}
+.k-band,
+.k-visual canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.k-visual {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.k-visual canvas {
+  cursor: default;
+}
+.k-visual .duet-msg {
+  position: absolute;
+  inset: 0;
+}
+select.k-viz {
+  background: #000;
+  color: var(--blue);
+  border: 1px solid var(--frame);
+  font-size: 11px;
+  padding: 1px 2px;
+}
+@media (max-width: 1000px) {
+  .k-stage.heads.band,
+  .k-stage.heads.visual,
+  .k-stage.heads.band.visual {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 300px 200px 200px;
+  }
+  .k-stage.heads.band.visual > .k-heads {
+    grid-row: auto;
+  }
+  .k-main {
+    grid-template-rows: auto auto 120px;
+  }
+}

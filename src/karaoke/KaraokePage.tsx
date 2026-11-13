@@ -24,6 +24,10 @@ import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
 import { align, applyAlignment, nudgeRatio, rescore, type Alignment } from "./align.ts";
 import { BODY_PRESETS, STYLES, bodyMix, defaultSettings, nearestPreset, presetOf, shiftOf, sourcePatch, styleOf, type PartSettings } from "./voices.ts";
 import { loadWords, saveWords, withWords, type Words } from "./words.ts";
+import { decodeShared, writeHash, type Shared } from "./share.ts";
+import { Band } from "./Band.tsx";
+import { VisualPane, BUILT_IN, builtInFor, loadVisual } from "./visuals/VisualPane.tsx";
+import type { Visual } from "./visuals/types.ts";
 import { melodyTracks, singLine, tuneStart } from "./song.ts";
 import { loadLakh, searchLakh, lakhPath, titleWords, qualityNote, type LakhRow } from "./lakh.ts";
 import "./karaoke.css";
@@ -40,6 +44,10 @@ interface Entry {
   file: string;
   /** a MIDI from the list that songs.json puts under this song by default */
   backing?: string;
+  /** songs.json: the song's visual (a built-in's id or a module's path under shows/karaoke/), and
+   *  its settings as a page address holds them, used where this browser keeps none */
+  visual?: string;
+  preset?: string;
   song: Song | null;
   error?: string;
   /** a dropped file's bytes (songs from the list are fetched) */
@@ -129,6 +137,18 @@ export function KaraokePage() {
   const [backingOn, setBackingOn] = useState(true);
   const [guide, setGuide] = useState(false);
   const [heads, setHeads] = useState(true);
+  const [band, setBand] = useState(true);
+  /** the backing's instruments muted from the band, "track:ch" */
+  const [mutedCh, setMutedCh] = useState<string[]>([]);
+  /** the visual: "auto", "off", a built-in's id or a module's URL */
+  const [viz, setViz] = useState("auto");
+  /** visual modules loaded from a URL or a file, by the key they're chosen by */
+  const [modules, setModules] = useState<Record<string, Visual>>({});
+  const [listed, setListed] = useState(false);
+  /** settings from the page's address, waiting for their song to open */
+  const pendingRef = useRef<Shared | null>(decodeShared(location.hash));
+  const [hashTick, setHashTick] = useState(0);
+  const [copied, setCopied] = useState(false);
   const [room, setRoom] = useState(0.22);
   const [openPart, setOpenPart] = useState<number | null>(null);
   const [voiceLevel, setVoiceLevel] = useState(1);
@@ -216,8 +236,9 @@ export function KaraokePage() {
       .finally(() => live && setDictReady(true));
     fetch(BASE + "songs.json")
       .then((r) => (r.ok ? r.json() : []))
-      .then((files: (string | { file: string; backing?: string })[]) => live && setEntries((e) => [...files.map((f) => (typeof f === "string" ? { file: f, song: null } : { file: f.file, backing: f.backing, song: null })), ...e]))
-      .catch(() => {});
+      .then((files: (string | { file: string; backing?: string; visual?: string; preset?: string })[]) => live && setEntries((e) => [...files.map((f) => (typeof f === "string" ? { file: f, song: null } : { file: f.file, backing: f.backing, visual: f.visual, preset: f.preset, song: null })), ...e]))
+      .catch(() => {})
+      .finally(() => live && setListed(true));
     return () => {
       live = false;
       p?.dispose();
@@ -246,6 +267,11 @@ export function KaraokePage() {
       if (!e && fresh) {
         e = fresh;
         setEntries((list) => [fresh, ...list]);
+      }
+      // a song songs.json sets up, opened fresh in this browser: its settings, as a link would give them
+      if (e?.preset && !pendingRef.current && !localStorage.getItem(`chimera-karaoke:voices:${file.replace(/\.[^.]+$/, "")}`)) {
+        const pre = decodeShared(e.preset);
+        if (pre) pendingRef.current = { ...pre, song: file };
       }
       if (!e || e.song) return;
       try {
@@ -299,7 +325,15 @@ export function KaraokePage() {
   useEffect(() => {
     setOverlay(null);
     if (!song || song.kind !== "ultrastar") return;
-    const saved = loadSaved(song);
+    const pend = pendingRef.current;
+    let saved = loadSaved(song);
+    if (pend && pend.song === current && "o" in pend) {
+      // the address says which MIDI goes under the song, or none
+      saved = (pend.o as SavedOverlay | null) ?? null;
+      delete pend.o;
+      settle();
+      if (!saved) return;
+    }
     // what this browser kept, else the backing songs.json gives the song
     const file = saved?.file ?? entries.find((x) => x.song === song)?.backing;
     if (!file) return;
@@ -353,7 +387,13 @@ export function KaraokePage() {
     if (!song || song.kind !== "midi" || !song.midi || !dictReady || wordsFor.current === song.id) return;
     wordsFor.current = song.id;
     setWords(null);
-    const w = loadWords(song);
+    let w = loadWords(song);
+    const pend = pendingRef.current;
+    if (pend && pend.song === current && "w" in pend) {
+      w = (pend.w as Words | null) ?? null;
+      delete pend.w;
+      settle();
+    }
     if (w?.text.trim()) applyWords(w);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song, dictReady]);
@@ -397,6 +437,134 @@ export function KaraokePage() {
     attach(s, lakhPath(c.row.md5), c.bytes, null);
   };
 
+  /** the address's settings are all applied: from now on the page writes them */
+  const settle = () => {
+    const pend = pendingRef.current;
+    if (pend && !pend.p && !("o" in pend) && !("w" in pend)) pendingRef.current = null;
+  };
+
+  // the song the address names opens once the song list is in (a Lakh file, through its index)
+  useEffect(() => {
+    const pend = pendingRef.current;
+    if (!pend || !listed || pend.song === current) return;
+    const file = pend.song;
+    const lakhMd5 = /^lakh\/[0-9a-f]\/([0-9a-f]{32})\.mid$/.exec(file)?.[1];
+    if (entries.some((e) => e.file === file)) void open(file);
+    else if (lakhMd5)
+      void ensureLakh().then((rows) => {
+        const r = rows?.find((x) => x.md5 === lakhMd5);
+        if (r) void open(file, lakhEntry(r));
+        else setError(`The address names ${file}, which the Lakh index here doesn't hold.`);
+      });
+    else void open(file, { file, song: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listed, hashTick]);
+
+  // a link pasted into the address bar (or the back button) opens its song and settings
+  const lastHash = useRef(location.hash);
+  useEffect(() => {
+    const on = () => {
+      if (location.hash === lastHash.current) return;
+      lastHash.current = location.hash;
+      const s = decodeShared(location.hash);
+      if (!s) return;
+      pendingRef.current = s;
+      // the same song: its settings apply again as it is read again
+      if (s.song === current) setEntries((list) => list.map((x) => (x.file === current ? { ...x, song: null } : x)));
+      setHashTick((n) => n + 1);
+    };
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, [current]);
+  // the same song asked again: read it again so its settings apply
+  useEffect(() => {
+    if (entry && !entry.song && !entry.error && current && pendingRef.current?.song === current) void open(current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hashTick]);
+
+  // the address follows the settings (a bookmark or a shared link brings them back)
+  useEffect(() => {
+    if (!song || !current || settings.length !== song.parts.length) return;
+    if (pendingRef.current && pendingRef.current.song === current) return;
+    const id = setTimeout(() => {
+      const a = overlay?.align;
+      const sh: Shared = {
+        song: current,
+        p: settings,
+        room,
+        vl: voiceLevel,
+        bl: backingLevel,
+        font,
+        bk: backingOn,
+        guide,
+        heads,
+        band,
+        mute: mutedCh.length ? mutedCh : undefined,
+        viz: viz === "auto" ? undefined : viz,
+      };
+      if (song.kind === "ultrastar") sh.o = overlay && a ? { file: overlay.file, ratio: a.ratio, offset: a.offset, transpose: a.transpose, melody: a.melody, muteMelody: overlay.muteMelody, warp: !!a.warp, name: names[overlay.file] } : null;
+      if (song.kind === "midi") sh.w = words?.w ?? null;
+      lastHash.current = writeHash(sh);
+    }, 350);
+    return () => clearTimeout(id);
+  }, [song, current, settings, room, voiceLevel, backingLevel, font, backingOn, guide, heads, band, mutedCh, viz, overlay, words, names]);
+
+  // the backing as it plays: the band's muted instruments left out
+  const backingPlay = useMemo(() => {
+    if (!backing || !mutedCh.length) return backing;
+    const m = new Set(mutedCh);
+    return { ...backing, notes: backing.notes.filter((n) => !m.has(`${n.track}:${n.ch}`)) };
+  }, [backing, mutedCh]);
+
+  // the visual for the song: the one chosen, else the one songs.json names, else a built-in
+  const [visual, setVisual] = useState<Visual | null>(null);
+  useEffect(() => {
+    if (!song) return;
+    let choice = viz;
+    if (choice === "auto" && entry?.visual) choice = entry.visual;
+    if (modules[choice]) return setVisual(modules[choice]);
+    if (choice !== "auto" && choice !== "off" && !BUILT_IN.some((v) => v.id === choice)) {
+      // a module's path or URL
+      const url = /^(blob:|https?:|\/)/.test(choice) ? choice : new URL(BASE + choice, location.href).href;
+      let live = true;
+      loadVisual(url)
+        .then((v) => {
+          if (!live) return;
+          setModules((m) => ({ ...m, [choice]: v }));
+          setVisual(v);
+        })
+        .catch((e) => {
+          setError(`Visual ${choice}: ${e instanceof Error ? e.message : e}`);
+          setVisual(builtInFor(song, "auto"));
+        });
+      return () => {
+        live = false;
+      };
+    }
+    setVisual(builtInFor(song, choice));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song?.id, viz, modules, entry?.visual]);
+  const loadVisualFile = async (f: File) => {
+    const url = URL.createObjectURL(new Blob([await f.text()], { type: "text/javascript" }));
+    try {
+      const v = await loadVisual(url);
+      const key = `file:${f.name}`;
+      setModules((m) => ({ ...m, [key]: v }));
+      setViz(key);
+    } catch (e) {
+      setError(`${f.name}: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+    } catch {
+      window.prompt("Copy this link:", location.href);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   // each part's voice: what this browser kept for the song, else the song's own guess
   const partsKey = song ? `${song.id}:${song.parts.length}` : "";
   useEffect(() => {
@@ -404,6 +572,31 @@ export function KaraokePage() {
   }, [song]);
   useEffect(() => {
     if (!song) return;
+    const pend = pendingRef.current;
+    if (pend && pend.song === current) {
+      // the address's settings: each part's voice (or this browser's, where it gives none), then
+      // the mix, the band and the visual
+      const p = pend.p ?? loadVoices(song) ?? [];
+      setSettings(song.parts.map((x, i) => ({ ...defaultSettings(x.body, autoOctave(x.notes, x.body)), ...(p[i] ?? {}) })));
+      if (pend.room !== undefined) setRoom(pend.room);
+      if (pend.vl !== undefined) setVoiceLevel(pend.vl);
+      if (pend.bl !== undefined) setBackingLevel(pend.bl);
+      if (pend.font) setFont(pend.font);
+      if (pend.bk !== undefined) setBackingOn(pend.bk);
+      if (pend.guide !== undefined) setGuide(pend.guide);
+      if (pend.heads !== undefined) setHeads(pend.heads);
+      if (pend.band !== undefined) setBand(pend.band);
+      setMutedCh(pend.mute ?? []);
+      setViz(pend.viz ?? "auto");
+      delete pend.p;
+      // only an UltraStar song takes a MIDI under it, only a MIDI takes words
+      if (song.kind !== "ultrastar") delete pend.o;
+      if (song.kind !== "midi") delete pend.w;
+      settle();
+      return;
+    }
+    setMutedCh([]);
+    setViz("auto");
     const kept = loadVoices(song);
     setSettings(song.parts.map((p, i) => (kept?.[i] ? { ...defaultSettings(p.body, 0), ...kept[i] } : defaultSettings(p.body, autoOctave(p.notes, p.body)))));
     // a new song's words come with it; the same song re-read keeps its voices
@@ -453,7 +646,7 @@ export function KaraokePage() {
       else
         guideNotes = song.parts.flatMap((p, i) => (settings[i].muted ? [] : p.notes.map((n) => ({ t0: n.t0, t1: n.t1, track: 0, ch: 15, midi: n.midi + shiftOf(settings[i]), vel: 80 }))));
     }
-    const midi = backingOn ? backing : null;
+    const midi = backingOn ? backingPlay : null;
     if (midi || guideNotes) {
       setSynthState((s) => (s === "ready" ? s : "loading"));
       player
@@ -462,7 +655,9 @@ export function KaraokePage() {
         .catch(() => setSynthState("failed"));
     }
     player.setBacking(midi, guideNotes);
-  }, [song, player, backingOn, guide, settings, backing, placed]);
+    // the guide follows the voices' pitch; nothing else of the voices restarts the backing
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song, player, backingOn, guide, guide ? settings.map((x) => `${shiftOf(x)},${x.muted}`).join("|") : "", backingPlay, placed]);
 
   useEffect(() => player?.setVoiceLevel(voiceLevel), [player, voiceLevel]);
   useEffect(() => player?.setBackingLevel(backingLevel), [player, backingLevel]);
@@ -605,6 +800,7 @@ export function KaraokePage() {
         {entry?.error && <p className="duet-msg error">{entry.error}</p>}
         {song && player && (
           <>
+            <div className={`k-stage${heads ? " heads" : ""}${band && backing ? " band" : ""}${visual ? " visual" : ""}`}>
             {heads && (
               <div className="duet-heads k-heads" style={{ "--voices": song.parts.length } as React.CSSProperties}>
                 {song.parts.map((p, i) =>
@@ -624,6 +820,37 @@ export function KaraokePage() {
                 )}
               </div>
             )}
+            {band && backing && (
+              <Screen className="k-band-pane" title="Band" sub={`${new Set(backing.notes.map((n) => `${n.track}:${n.ch}`)).size} instruments`}>
+                <Band player={player} backing={backing} muted={mutedCh} onToggle={(k) => setMutedCh((m) => (m.includes(k) ? m.filter((x) => x !== k) : [...m, k]))} />
+              </Screen>
+            )}
+            {visual && (
+              <Screen
+                className="k-visual-pane"
+                title="Visual"
+                sub={visual.name}
+                tools={
+                  <select className="k-viz" value={viz} onChange={(e) => setViz(e.target.value)} aria-label="Visual">
+                    <option value="auto">Auto</option>
+                    {BUILT_IN.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name}
+                      </option>
+                    ))}
+                    {Object.entries(modules).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v.name}
+                      </option>
+                    ))}
+                    <option value="off">Off</option>
+                  </select>
+                }
+              >
+                <VisualPane player={player} song={song} backing={backingPlay} visual={visual} colors={PART_COLORS} />
+              </Screen>
+            )}
+            </div>
             <Lyrics song={song} time={t} settings={settings} />
             <Roll song={song} player={player} settings={settings} backing={backing} />
           </>
@@ -705,6 +932,21 @@ export function KaraokePage() {
             <Toggle label="Melody guide (piano)" checked={guide} onChange={setGuide} />
             <Slider label="Backing" value={backingLevel} min={0} max={1.5} onChange={setBackingLevel} format={(v) => `${Math.round(v * 100)}%`} />
             <Toggle label="3D heads" checked={heads} onChange={setHeads} />
+            <Toggle label="Band" checked={band} onChange={setBand} />
+            {viz === "off" ? (
+              <button className="k-add small" onClick={() => setViz("auto")}>
+                Show the visual
+              </button>
+            ) : (
+              <label className="k-add small">
+                <input type="file" accept=".js,.mjs" onChange={(e) => e.target.files?.[0] && void loadVisualFile(e.target.files[0])} />
+                Load a visual…
+              </label>
+            )}
+            <div className="k-sep" />
+            <button className="k-add small" onClick={() => void copyLink()} title="The page's address holds the song and all these settings: bookmark it, or share it">
+              {copied ? "Link copied" : "Copy link to these settings"}
+            </button>
           </Screen>
         )}
       </aside>
