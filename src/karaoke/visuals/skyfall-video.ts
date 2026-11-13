@@ -194,7 +194,7 @@ function man(g: CanvasRenderingContext2D, x: number, y: number, s: number, pose:
 }
 
 /** a woman in a long dress, feet at (0,0), about 0.95 tall; `reach` lifts her near arm */
-function woman(g: CanvasRenderingContext2D, x: number, y: number, s: number, dir: number, reach: number, fill: string) {
+function woman(g: CanvasRenderingContext2D, x: number, y: number, s: number, dir: number, reach: number, fill: string, rim?: string) {
   g.save();
   g.translate(x, y);
   g.scale(s * dir, s);
@@ -217,6 +217,11 @@ function woman(g: CanvasRenderingContext2D, x: number, y: number, s: number, dir
   g.closePath();
   g.fillStyle = fill;
   g.fill();
+  if (rim) {
+    g.strokeStyle = rim;
+    g.lineWidth = 1.2 / s;
+    g.stroke();
+  }
   g.restore();
 }
 
@@ -916,8 +921,9 @@ const embrace: SceneMaker = (rand) => {
       // they come together through the bridge, and their hands meet at its end
       const gap = (1 - ease(clamp(f.sp * 1.1))) * w * 0.3 + w * 0.035;
       const s = h * 0.5;
-      man(g, lx - gap, ground, s, f.sp < 0.85 && f.playing ? "walk" : "stand", f.t * 3, "#000");
-      woman(g, lx + gap, ground, s * 0.94, -1, ease(clamp((f.sp - 0.6) / 0.35)), "#000");
+      const rim = `rgba(255,190,120,${0.35 + 0.3 * glow})`;
+      man(g, lx - gap, ground, s, f.sp < 0.85 && f.playing ? "walk" : "stand", f.t * 3, "#000", rim);
+      woman(g, lx + gap, ground, s * 0.94, -1, ease(clamp((f.sp - 0.6) / 0.35)), "#000", rim);
       g.strokeStyle = "rgba(255,210,170,0.35)";
       g.lineWidth = 1;
       g.beginPath();
@@ -961,7 +967,7 @@ const fire: SceneMaker = (rand) => {
     draw(g, w, h, f) {
       if (f.kick) flare = Math.min(1, flare + 0.35 * f.kick);
       flare *= Math.exp(-f.dt * 3);
-      const heat = 0.5 + 0.3 * f.loud + 0.3 * flare;
+      const heat = 0.75 + 0.35 * f.loud + 0.3 * flare + 0.2 * f.sp;
       const sky = g.createLinearGradient(0, 0, 0, h);
       sky.addColorStop(0, "#090303");
       sky.addColorStop(1, `rgb(${Math.round(120 * heat)},${Math.round(36 * heat)},10)`);
