@@ -26,6 +26,7 @@ import { BODY_PRESETS, STYLES, bodyMix, defaultSettings, nearestPreset, presetOf
 import { loadWords, saveWords, withWords, type Words } from "./words.ts";
 import { decodeShared, writeHash, type Shared } from "./share.ts";
 import { Band } from "./Band.tsx";
+import { PaneLayout, DEFAULT_LAYOUT, loadLayout, saveLayout, normalLayout, type Layout } from "./Layout.tsx";
 import { VisualPane, BUILT_IN, builtInFor, loadVisual } from "./visuals/VisualPane.tsx";
 import type { Visual } from "./visuals/types.ts";
 import { melodyTracks, singLine, tuneStart } from "./song.ts";
@@ -149,6 +150,13 @@ export function KaraokePage() {
   const pendingRef = useRef<Shared | null>(decodeShared(location.hash));
   const [hashTick, setHashTick] = useState(0);
   const [copied, setCopied] = useState(false);
+  /** the whole mix's volume (1: as mixed), kept in this browser */
+  const [volume, setVolume] = useState(() => Number(localStorage.getItem("chimera-karaoke:volume") ?? 1) || 1);
+  const [layout, setLayoutState] = useState<Layout>(loadLayout);
+  const setLayout = (l: Layout) => {
+    setLayoutState(l);
+    saveLayout(l);
+  };
   const [room, setRoom] = useState(0.22);
   const [openPart, setOpenPart] = useState<number | null>(null);
   const [voiceLevel, setVoiceLevel] = useState(1);
@@ -501,13 +509,15 @@ export function KaraokePage() {
         band,
         mute: mutedCh.length ? mutedCh : undefined,
         viz: viz === "auto" ? undefined : viz,
+        mv: volume === 1 ? undefined : volume,
+        lay: JSON.stringify(layout) === JSON.stringify(DEFAULT_LAYOUT) ? undefined : layout,
       };
       if (song.kind === "ultrastar") sh.o = overlay && a ? { file: overlay.file, ratio: a.ratio, offset: a.offset, transpose: a.transpose, melody: a.melody, muteMelody: overlay.muteMelody, warp: !!a.warp, name: names[overlay.file] } : null;
       if (song.kind === "midi") sh.w = words?.w ?? null;
       lastHash.current = writeHash(sh);
     }, 350);
     return () => clearTimeout(id);
-  }, [song, current, settings, room, voiceLevel, backingLevel, font, backingOn, guide, heads, band, mutedCh, viz, overlay, words, names]);
+  }, [song, current, settings, room, voiceLevel, backingLevel, font, backingOn, guide, heads, band, mutedCh, viz, overlay, words, names, volume, layout]);
 
   // the backing as it plays: the band's muted instruments left out
   const backingPlay = useMemo(() => {
@@ -588,6 +598,8 @@ export function KaraokePage() {
       if (pend.band !== undefined) setBand(pend.band);
       setMutedCh(pend.mute ?? []);
       setViz(pend.viz ?? "auto");
+      if (pend.mv !== undefined) setVolume(pend.mv);
+      if (pend.lay) setLayout(normalLayout(pend.lay));
       delete pend.p;
       // only an UltraStar song takes a MIDI under it, only a MIDI takes words
       if (song.kind !== "ultrastar") delete pend.o;
@@ -659,6 +671,10 @@ export function KaraokePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song, player, backingOn, guide, guide ? settings.map((x) => `${shiftOf(x)},${x.muted}`).join("|") : "", backingPlay, placed]);
 
+  useEffect(() => {
+    player?.setVolume(volume);
+    localStorage.setItem("chimera-karaoke:volume", String(volume));
+  }, [player, volume]);
   useEffect(() => player?.setVoiceLevel(voiceLevel), [player, voiceLevel]);
   useEffect(() => player?.setBackingLevel(backingLevel), [player, backingLevel]);
   useEffect(() => {
@@ -800,8 +816,14 @@ export function KaraokePage() {
         {entry?.error && <p className="duet-msg error">{entry.error}</p>}
         {song && player && (
           <>
-            <div className={`k-stage${heads ? " heads" : ""}${band && backing ? " band" : ""}${visual ? " visual" : ""}`}>
-            {heads && (
+            <PaneLayout
+              layout={layout}
+              onChange={setLayout}
+              panes={[
+                {
+                  id: "voices",
+                  shown: heads,
+                  node: (
               <div className="duet-heads k-heads" style={{ "--voices": song.parts.length } as React.CSSProperties}>
                 {song.parts.map((p, i) =>
                   settings[i] ? (
@@ -819,13 +841,21 @@ export function KaraokePage() {
                   ) : null,
                 )}
               </div>
-            )}
-            {band && backing && (
+                  ),
+                },
+                {
+                  id: "band",
+                  shown: band && !!backing,
+                  node: backing && (
               <Screen className="k-band-pane" title="Band" sub={`${new Set(backing.notes.map((n) => `${n.track}:${n.ch}`)).size} instruments`}>
                 <Band player={player} backing={backing} muted={mutedCh} onToggle={(k) => setMutedCh((m) => (m.includes(k) ? m.filter((x) => x !== k) : [...m, k]))} />
               </Screen>
-            )}
-            {visual && (
+                  ),
+                },
+                {
+                  id: "visual",
+                  shown: !!visual,
+                  node: visual && (
               <Screen
                 className="k-visual-pane"
                 title="Visual"
@@ -849,10 +879,28 @@ export function KaraokePage() {
               >
                 <VisualPane player={player} song={song} backing={backingPlay} visual={visual} colors={PART_COLORS} />
               </Screen>
-            )}
-            </div>
-            <Lyrics song={song} time={t} settings={settings} />
-            <Roll song={song} player={player} settings={settings} backing={backing} />
+                  ),
+                },
+                {
+                  id: "lyrics",
+                  shown: true,
+                  node: (
+                    <Screen className="k-lyrics-pane" title="Lyrics">
+                      <Lyrics song={song} time={t} settings={settings} />
+                    </Screen>
+                  ),
+                },
+                {
+                  id: "roll",
+                  shown: true,
+                  node: (
+                    <Screen className="k-roll-pane" title="Notes">
+                      <Roll song={song} player={player} settings={settings} backing={backing} />
+                    </Screen>
+                  ),
+                },
+              ]}
+            />
           </>
         )}
       </main>
@@ -943,6 +991,9 @@ export function KaraokePage() {
                 Load a visual…
               </label>
             )}
+            <button className="k-add small" onClick={() => setLayout(structuredClone(DEFAULT_LAYOUT))} title="Drag a pane's title to move it; drag the gaps between panes to resize them">
+              Reset the panes
+            </button>
             <div className="k-sep" />
             <button className="k-add small" onClick={() => void copyLink()} title="The page's address holds the song and all these settings: bookmark it, or share it">
               {copied ? "Link copied" : "Copy link to these settings"}
@@ -972,6 +1023,21 @@ export function KaraokePage() {
           }}
           style={{ "--pos": `${duration ? (100 * t) / duration : 0}%` } as React.CSSProperties}
         />
+        <label className="k-volume" title="The whole mix's volume: past 100% makes it louder, a limiter keeps it from clipping">
+          <span>Volume</span>
+          <input
+            type="range"
+            aria-label="Volume"
+            min={0}
+            max={3}
+            step={0.01}
+            value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            onDoubleClick={() => setVolume(1)}
+            style={{ "--pos": `${(100 * volume) / 3}%` } as React.CSSProperties}
+          />
+          <output>{Math.round(volume * 100)}%</output>
+        </label>
       </footer>
     </div>
   );

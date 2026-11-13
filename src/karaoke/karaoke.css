@@ -43,9 +43,8 @@
 .k-main {
   grid-area: main;
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto 140px;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
 }
 .k-bar {
   grid-area: bar;
@@ -178,13 +177,14 @@
 }
 .k-lyrics {
   position: relative;
-  min-height: 150px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 4px;
   padding: 6px 12px;
-  border: 1px solid var(--frame);
   text-align: center;
 }
 .k-countin {
@@ -225,9 +225,9 @@
   color: transparent;
 }
 .k-roll {
+  display: block;
   width: 100%;
   height: 100%;
-  border: 1px solid var(--frame);
   background: #000;
 }
 @media (max-width: 1000px) {
@@ -421,39 +421,127 @@ button.k-tweak:hover {
   border: 1px solid var(--frame);
   padding: 3px;
 }
-/* the stage: the voices biggest, the band and the visual beside them */
-.k-stage {
-  display: grid;
-  gap: 8px;
-  min-height: 0;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+select.k-viz {
+  background: #000;
+  color: var(--blue);
+  border: 1px solid var(--frame);
+  font-size: 11px;
+  padding: 1px 2px;
 }
-.k-stage > * {
+
+/* the panes: placed by Layout.tsx, moved by their title bars, resized by the gaps */
+.k-layout {
+  position: relative;
+  flex: 1;
   min-height: 0;
+}
+.k-pane {
+  position: absolute;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.k-pane > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.k-pane > .k-heads {
+  height: 100%;
+}
+.k-pane .screen-head {
+  cursor: grab;
+  user-select: none;
+}
+.k-layout.dragging,
+.k-layout.dragging .screen-head {
+  cursor: grabbing;
+}
+.k-layout.dragging .k-pane {
+  pointer-events: none;
+}
+.k-pane.moving {
+  opacity: 0.45;
+}
+.k-pane .screen-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.k-split {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+.k-split.v {
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+}
+.k-split.h {
+  height: 8px;
+  cursor: row-resize;
+}
+.k-split:hover {
+  background: rgba(79, 182, 242, 0.25);
+}
+.k-drop {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 2px dashed var(--amber);
+  background: rgba(255, 179, 64, 0.12);
+}
+.k-volume {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 230px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--blue-mid);
+}
+.k-volume input[type="range"] {
+  flex: 1;
   min-width: 0;
 }
-.k-stage.heads.band,
-.k-stage.heads.visual {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+.k-volume output {
+  width: 38px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--white);
 }
-.k-stage.heads.band.visual {
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-}
-.k-stage.heads.band.visual > .k-heads {
-  grid-row: 1 / 3;
-}
-.k-stage.band.visual:not(.heads) {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-}
-.k-stage > .k-heads {
-  height: 100%;
+@media (max-width: 1000px) {
+  .k-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .k-pane {
+    position: static !important;
+    width: auto !important;
+    height: 280px !important;
+  }
+  .k-pane-lyrics {
+    height: 170px !important;
+  }
+  .k-pane-roll {
+    height: 130px !important;
+  }
+  .k-split {
+    display: none;
+  }
 }
 .k-band,
 .k-visual canvas {
   display: block;
   width: 100%;
   height: 100%;
+}
+.k-band {
   cursor: pointer;
 }
 .k-visual {
@@ -462,31 +550,7 @@ button.k-tweak:hover {
   height: 100%;
   background: #000;
 }
-.k-visual canvas {
-  cursor: default;
-}
 .k-visual .duet-msg {
   position: absolute;
   inset: 0;
-}
-select.k-viz {
-  background: #000;
-  color: var(--blue);
-  border: 1px solid var(--frame);
-  font-size: 11px;
-  padding: 1px 2px;
-}
-@media (max-width: 1000px) {
-  .k-stage.heads.band,
-  .k-stage.heads.visual,
-  .k-stage.heads.band.visual {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 300px 200px 200px;
-  }
-  .k-stage.heads.band.visual > .k-heads {
-    grid-row: auto;
-  }
-  .k-main {
-    grid-template-rows: auto auto 120px;
-  }
 }

@@ -123,10 +123,17 @@ export class KaraokePlayer {
     comp.ratio.value = 4;
     comp.attack.value = 0.003;
     comp.release.value = 0.2;
-    this.master.connect(comp).connect(ctx.destination);
+    // a fast limiter last, so the volume can go past 100% without the output clipping
+    const limit = ctx.createDynamicsCompressor();
+    limit.threshold.value = -1.5;
+    limit.knee.value = 0;
+    limit.ratio.value = 20;
+    limit.attack.value = 0.001;
+    limit.release.value = 0.12;
+    this.master.connect(comp).connect(limit).connect(ctx.destination);
     this.meter = ctx.createAnalyser();
     this.meter.fftSize = 2048;
-    comp.connect(this.meter);
+    limit.connect(this.meter);
     // the voices go through a small hall so they sit in the same room as the band
     this.voiceBus = ctx.createGain();
     const dry = ctx.createGain();
@@ -146,6 +153,11 @@ export class KaraokePlayer {
     const ctx = new AudioContext({ latencyHint: "playback" });
     await ctx.audioWorklet.addModule(workletUrl);
     return new KaraokePlayer(ctx);
+  }
+
+  /** the whole mix's volume: 1 as it was, up to 3 to make it louder (the limiter holds the peaks) */
+  setVolume(v: number): void {
+    this.master.gain.setTargetAtTime(0.9 * v, this.ctx.currentTime, 0.02);
   }
 
   setVoiceLevel(v: number): void {

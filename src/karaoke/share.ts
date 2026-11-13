@@ -30,6 +30,10 @@ export interface Shared {
   mute?: string[];
   /** the visual: a built-in's id, a module's URL, "auto" or "off" */
   viz?: string;
+  /** the whole mix's volume */
+  mv?: number;
+  /** the panes' arrangement (Layout.tsx) */
+  lay?: unknown;
 }
 
 function b64url(s: string): string {
