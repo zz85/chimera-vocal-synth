@@ -9,9 +9,10 @@ import type { MidiFile, MidiNote } from "../midifile.ts";
 import type { Song } from "../song.ts";
 import type { Visual, VisualHost, SungNow } from "./types.ts";
 import { skyfall } from "./skyfall.ts";
+import { skyfallVideo } from "./skyfall-video.ts";
 import { spectrum } from "./spectrum.ts";
 
-export const BUILT_IN: Visual[] = [skyfall, spectrum];
+export const BUILT_IN: Visual[] = [skyfallVideo, skyfall, spectrum];
 
 /** a visual module of its own, from a URL: its default export (or its `visual`) */
 export async function loadVisual(url: string): Promise<Visual> {

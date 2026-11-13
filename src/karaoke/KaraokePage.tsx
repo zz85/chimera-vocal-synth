@@ -822,6 +822,7 @@ export function KaraokePage() {
               panes={[
                 {
                   id: "voices",
+                  title: "Voices",
                   shown: heads,
                   node: (
               <div className="duet-heads k-heads" style={{ "--voices": song.parts.length } as React.CSSProperties}>
@@ -845,6 +846,7 @@ export function KaraokePage() {
                 },
                 {
                   id: "band",
+                  title: "Band",
                   shown: band && !!backing,
                   node: backing && (
               <Screen className="k-band-pane" title="Band" sub={`${new Set(backing.notes.map((n) => `${n.track}:${n.ch}`)).size} instruments`}>
@@ -854,6 +856,7 @@ export function KaraokePage() {
                 },
                 {
                   id: "visual",
+                  title: "Visual",
                   shown: !!visual,
                   node: visual && (
               <Screen
@@ -883,6 +886,7 @@ export function KaraokePage() {
                 },
                 {
                   id: "lyrics",
+                  title: "Lyrics",
                   shown: true,
                   node: (
                     <Screen className="k-lyrics-pane" title="Lyrics">
@@ -892,6 +896,7 @@ export function KaraokePage() {
                 },
                 {
                   id: "roll",
+                  title: "Notes",
                   shown: true,
                   node: (
                     <Screen className="k-roll-pane" title="Notes">

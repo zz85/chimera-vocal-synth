@@ -50,9 +50,8 @@ function rng(seed: number) {
 }
 
 export const skyfall: Visual = {
-  id: "skyfall",
-  name: "Skyfall",
-  match: (song) => /sky\s*fall/i.test(song.title),
+  id: "skyfall-water",
+  name: "Skyfall: under water",
   create(g, host) {
     const rand = rng(1962);
     const ink: Ink[] = [];
