@@ -17,7 +17,8 @@ import type { HeadFeed } from "../ui/components/AnatomyView3D.tsx";
 import type { ViewFlags } from "../ui/render/anatomy.ts";
 import { EnglishG2P, NEUTRAL } from "../wasm/engine.ts";
 import type { BodyMix } from "../wasm/types.ts";
-import { parseSong, autoOctave, type Song, type BodyName, type VNote } from "./song.ts";
+import { parseSong, autoOctave, type Song, type BodyName, type VNote, type Lang } from "./song.ts";
+import { loadHanzi, hanziLoaded } from "./hanzi.ts";
 import { planPart, type Phrase } from "./plan.ts";
 import { KaraokePlayer, SOUNDFONTS } from "./player.ts";
 import { parseMidi, type MidiFile, type MidiNote } from "./midifile.ts";
@@ -628,17 +629,31 @@ export function KaraokePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planKey]);
 
+  // Chinese lyrics sing by their characters' pinyin: the table is fetched the first time a song needs it
+  const [hanziReady, setHanziReady] = useState(hanziLoaded());
+  useEffect(() => {
+    if (song?.lang !== "zh" || hanziReady) return;
+    let live = true;
+    loadHanzi()
+      .catch(() => console.warn("karaoke: no pinyin table; Chinese characters are held on the vowel before"))
+      .finally(() => live && setHanziReady(true));
+    return () => {
+      live = false;
+    };
+  }, [song?.lang, hanziReady]);
+
   // plan the parts and hand them to the player
   useEffect(() => {
     const ps = planned.settings;
     if (!song || !player || !dictReady || ps.length !== song.parts.length) return;
+    if (song.lang === "zh" && !hanziReady) return;
     player.duration = Math.max(song.duration, (backing?.duration ?? 0) + 1);
     const phrases = song.parts.map((p, i) => planPart(p.notes, { body: bodyMix(ps[i]), octave: ps[i].octave, transpose: ps[i].transpose, vibrato: ps[i].vibrato, lang: song.lang }));
     phrasesRef.current = phrases;
     player.setParts(song.parts.map((_, i) => ({ body: bodyMix(ps[i]), phrases: phrases[i], muted: ps[i].muted })));
     setMixTick((n) => n + 1);
     setTick((n) => n + 1);
-  }, [song, player, dictReady, planned, backing]);
+  }, [song, player, dictReady, hanziReady, planned, backing]);
 
   // the voice and the mix follow the sliders at once
   const [mixTick, setMixTick] = useState(0);
@@ -741,7 +756,7 @@ export function KaraokePage() {
 
   const setPart = (i: number, patch: Partial<PartSettings>) => setSettings((s) => s.map((x, k) => (k === i ? { ...x, ...patch } : x)));
   const replaceSong = (s: Song) => setEntries((list) => list.map((x) => (x.file === current ? { ...x, song: s } : x)));
-  const setLang = (lang: "en" | "ja") => song && replaceSong({ ...song, lang });
+  const setLang = (lang: Lang) => song && replaceSong({ ...song, lang });
 
   return (
     <div
@@ -930,9 +945,11 @@ export function KaraokePage() {
             {song.kind !== "midi" && (
               <label className="k-select">
                 <span>Lyrics are</span>
-                <select value={song.lang} onChange={(e) => setLang(e.target.value as "en" | "ja")}>
+                <select value={song.lang} onChange={(e) => setLang(e.target.value as Lang)}>
                   <option value="en">English</option>
                   <option value="ja">Japanese (kana or romaji)</option>
+          <option value="zh">Chinese (characters)</option>
+                  <option value="zh">Chinese (characters)</option>
                 </select>
               </label>
             )}
@@ -1463,7 +1480,7 @@ function WordsPanel(props: { song: Song; words: { w: Words; pieces: number; left
   const tracks = useMemo(() => (song.midi ? melodyTracks(song.midi) : []), [song.midi]);
   const key = props.words?.w.key ?? song.melodyKey ?? tracks[0]?.key ?? "";
   const [text, setText] = useState(props.words?.w.text ?? "");
-  const [lang, setLang] = useState<"en" | "ja">(props.words?.w.lang ?? "en");
+  const [lang, setLang] = useState<Lang>(props.words?.w.lang ?? "en");
   const [from, setFrom] = useState<number | null>(props.words?.w.from ?? null);
   useEffect(() => {
     setText(props.words?.w.text ?? "");
@@ -1489,9 +1506,10 @@ function WordsPanel(props: { song: Song; words: { w: Words; pieces: number; left
       </label>
       <label className="k-select">
         <span>Language</span>
-        <select value={lang} onChange={(e) => setLang(e.target.value as "en" | "ja")}>
+        <select value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
           <option value="en">English</option>
           <option value="ja">Japanese (kana or romaji)</option>
+          <option value="zh">Chinese (characters)</option>
         </select>
       </label>
       <textarea className="k-lyrics-in" rows={6} placeholder={"Paste the lyrics, a line each.\nOne syllable (or mora) a note; - holds a note, _ leaves one to the band."} value={text} onChange={(e) => setText(e.target.value)} />

@@ -1,12 +1,14 @@
 /**
  * A part's notes → phrases the voice sings: lyric fragments become sung syllables (through the
- * pronouncing dictionary), each phrase is planned whole with planSong, and the player sends each
+ * pronouncing dictionary, the Japanese morae, or the Chinese characters' pinyin), each phrase is planned whole with planSong, and the player sends each
  * phrase's gestures to its voice shortly before it starts.
  */
 import { lyricsToSyllables, planSong, type Syllable, type SungNote, type Gesture } from "../wasm/engine.ts";
 import type { BodyMix } from "../wasm/types.ts";
-import type { VNote } from "./song.ts";
+import type { Lang, VNote } from "./song.ts";
 import { japaneseText } from "./japanese.ts";
+import { hanziReadings, isHan } from "./hanzi.ts";
+import { mandarinSyllable } from "./mandarin.ts";
 
 /** the planned gestures start this long before the phrase's first note (consonants come first) */
 export const PRE = 0.4;
@@ -34,7 +36,7 @@ function clean(text: string): string {
     .trim();
 }
 
-function syllables(text: string, lang: "en" | "ja" = "en", notes?: number): Syllable[] {
+function syllables(text: string, lang: Lang = "en", notes?: number): Syllable[] {
   const t = clean(text);
   if (!t || !/[\p{L}\p{N}]/u.test(t)) return [];
   if (lang === "ja") {
@@ -68,7 +70,7 @@ function phrasesOf(notes: VNote[]): VNote[][] {
 }
 
 /** a phrase's notes → sung notes, one syllable each (a note split where a group has more syllables) */
-function sungNotes(phrase: VNote[], shift: number, lang: "en" | "ja"): { midi: number; t0: number; t1: number; syl: Syllable }[] {
+function sungNotes(phrase: VNote[], shift: number, lang: Lang): { midi: number; t0: number; t1: number; syl: Syllable }[] {
   // words, each of groups: a fragment and the continuations after it
   const words: VNote[][][] = [];
   for (const n of phrase) {
@@ -79,13 +81,22 @@ function sungNotes(phrase: VNote[], shift: number, lang: "en" | "ja"): { midi: n
   }
   const out: { midi: number; t0: number; t1: number; syl: Syllable }[] = [];
   let last: Syllable | null = null;
+  // Chinese: the phrase's characters read together, so a word picks each character's reading
+  // (銀行 yin hang beside 行 xing); each group then sings its own characters' syllables
+  const han = lang === "zh" ? chineseSyllables(phrase) : null;
   for (const groups of words) {
     const texts = groups.map((g) => g.map((n) => n.text).join(""));
     // the whole word through the dictionary first; where its syllables don't fall one to a group,
     // each group alone
     // Japanese: each mora is a note, and ん or ー a held vowel, so the whole word fits its notes
-    const whole = groups.length > 1 ? syllables(texts.join(""), lang, lang === "ja" ? groups.length : undefined) : [];
-    const per = whole.length === groups.length ? whole.map((s) => [s]) : texts.map((x, gi) => syllables(x, lang, lang === "ja" ? groups[gi].length : undefined));
+    // Chinese: a group of characters sings their syllables, any other group (a word in English) as English
+    const zh = han ? groups.map((g) => han.get(g[0])) : null;
+    const whole = !zh && groups.length > 1 ? syllables(texts.join(""), lang, lang === "ja" ? groups.length : undefined) : [];
+    const per = zh
+      ? groups.map((_, gi) => zh[gi] ?? syllables(texts[gi], "en"))
+      : whole.length === groups.length
+        ? whole.map((s) => [s])
+        : texts.map((x, gi) => syllables(x, lang, lang === "ja" ? groups[gi].length : undefined));
     const wordOut: { midi: number; t0: number; t1: number; syl: Syllable }[] = [];
     groups.forEach((g, gi) => {
       const syls = per[gi];
@@ -121,6 +132,38 @@ function sungNotes(phrase: VNote[], shift: number, lang: "en" | "ja"): { midi: n
   return out;
 }
 
+/**
+ * The syllables each group of a Chinese phrase sings, by the group's first note: the phrase's
+ * characters are read together, and a group sings the syllables of its own characters (a group
+ * without characters isn't in the map). A character the table can't read holds the vowel before.
+ */
+function chineseSyllables(phrase: VNote[]): Map<VNote, Syllable[]> {
+  // a group: a note and the continuations after it
+  const groups: VNote[][] = [];
+  for (const n of phrase) {
+    if (!groups.length || !n.cont) groups.push([]);
+    groups[groups.length - 1].push(n);
+  }
+  const texts = groups.map((g) => g.map((n) => n.text).join(""));
+  const readings = hanziReadings(texts.join(""));
+  const out = new Map<VNote, Syllable[]>();
+  let at = 0;
+  groups.forEach((g, gi) => {
+    const chars = [...texts[gi]];
+    const syls: Syllable[] = [];
+    chars.forEach((ch, k) => {
+      if (!isHan(ch)) return;
+      const py = readings[at + k];
+      const syl = py ? mandarinSyllable(py, ch) : null;
+      if (syl) syls.push(syl);
+      else if (syls.length) syls.push(melismaOf(syls[syls.length - 1]));
+    });
+    at += chars.length;
+    if (chars.some(isHan)) out.set(g[0], syls);
+  });
+  return out;
+}
+
 export interface PlanOptions {
   body: BodyMix;
   /** octaves to move the part by */
@@ -129,7 +172,7 @@ export interface PlanOptions {
   vibrato: number;
   /** semitones on top of the octave */
   transpose?: number;
-  lang?: "en" | "ja";
+  lang?: Lang;
 }
 
 export function planPart(notes: VNote[], o: PlanOptions): Phrase[] {

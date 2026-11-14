@@ -7,6 +7,22 @@
  */
 import { parseMidi, trackLabel, type MidiFile, type MidiNote } from "./midifile.ts";
 import { hasKana } from "./japanese.ts";
+import { hasHan } from "./hanzi.ts";
+
+export type Lang = "en" | "ja" | "zh";
+
+/**
+ * The language of a song's lyrics: Japanese where its language tag says so or any lyric holds
+ * kana; else Chinese where at least a third of its lyrics hold Chinese characters (old Chinese
+ * .kar files often carry an English tag); else English.
+ */
+export function lyricsLang(texts: string[], tag = ""): Lang {
+  if (/jap|jpn|^ja/i.test(tag) || texts.some(hasKana)) return "ja";
+  // by lyric, not by letter: an English credit line is one lyric of many letters
+  const words = texts.filter((t) => /\p{L}/u.test(t));
+  const han = words.filter(hasHan).length;
+  return /chi|chn|zh|中文|國語|国语/i.test(tag) || (words.length && han / words.length >= 1 / 3) ? "zh" : "en";
+}
 
 export type BodyName = "male" | "female" | "child";
 
@@ -47,8 +63,9 @@ export interface Song {
   /** a karaoke MIDI: the share of its lyrics that a melody note sounds under (0..1); 0 where no
    *  track follows the lyrics */
   melodyHit?: number;
-  /** the language the lyrics are sung in: Japanese reads kana and romaji by the mora */
-  lang: "en" | "ja";
+  /** the language the lyrics are sung in: Japanese reads kana and romaji by the mora, Chinese its
+   *  characters by their pinyin */
+  lang: Lang;
   /** a MIDI without lyrics: the file, and the track the voice sings, so words can be put to it */
   midi?: MidiFile;
   melodyKey?: string;
@@ -149,7 +166,7 @@ export function parseUltraStar(text: string, id: string): Song {
     parts[a <= b ? 1 : 0].body = "female";
   }
   const duration = Math.max(0, ...parts.flatMap((p) => p.notes.map((n) => n.t1))) + 2;
-  const lang = /japan/i.test(head.LANGUAGE ?? "") || parts.some((p) => p.notes.some((n) => hasKana(n.text))) ? "ja" : "en";
+  const lang = lyricsLang(parts.flatMap((p) => p.notes.map((n) => n.text)), head.LANGUAGE ?? "");
   return { id, title: head.TITLE ?? id, artist, kind: "ultrastar", parts, backing: null, guide: [], audioName: head.MP3 || head.AUDIO, duration, lang };
 }
 
@@ -331,7 +348,7 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
       artist: artist || fArtist,
       kind: "kar",
       melodyHit: 0,
-      lang: /jap|jpn|^ja/i.test(langTag) || lyrics.some((l) => hasKana(l.text)) ? "ja" : "en",
+      lang: lyricsLang(lyrics.map((l) => l.text), langTag),
       parts: [{ name, body, notes: lyricNotes }],
       backing: m,
       guide: [],
@@ -364,7 +381,7 @@ export function parseMidiSong(bytes: ArrayBuffer | Uint8Array, id: string, fileT
     artist: artist || fArtist,
     kind: "kar",
     melodyHit: 1 - missed / lyrics.length,
-    lang: /jap|jpn|^ja/i.test(langTag) || lyrics.some((l) => hasKana(l.text)) ? "ja" : "en",
+    lang: lyricsLang(lyrics.map((l) => l.text), langTag),
     parts: [{ name, body, notes }],
     backing,
     guide,

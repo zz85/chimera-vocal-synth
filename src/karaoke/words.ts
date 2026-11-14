@@ -1,16 +1,17 @@
 /**
  * Words for a MIDI without lyrics: lyrics typed or pasted on the page are put to a track's tune,
- * one syllable (English, through the pronouncing dictionary) or one mora (Japanese, kana or
- * romaji) to a note. The words, the track, where they start and their language are kept per
+ * one syllable (English, through the pronouncing dictionary), one mora (Japanese, kana or
+ * romaji) or one character (Chinese) to a note. The words, the track, where they start and their language are kept per
  * song in the browser.
  */
 import { lyricsToSyllables } from "../wasm/engine.ts";
 import { moraeOf } from "./japanese.ts";
-import { wordsToTune, type Song } from "./song.ts";
+import { wordsToTune, type Lang, type Song } from "./song.ts";
+import { isHan } from "./hanzi.ts";
 
 export interface Words {
   text: string;
-  lang: "en" | "ja";
+  lang: Lang;
   /** the track the tune is on, "track:ch" */
   key: string;
   /** where the first word is sung (s) */
@@ -33,12 +34,19 @@ export function saveWords(song: Song, w: Words | null): void {
 }
 
 /** one word → the pieces sung one to a note, as they are written */
-function pieces(word: string, lang: "en" | "ja"): string[] {
+function pieces(word: string, lang: Lang): string[] {
   // marks typed on their own: a held note, a note left to the instrument
   if (/^[-~_]+$/.test(word)) return [...word];
   // "ti-ger": the writer's own split
   if (word.includes("-") && lang === "en") return word.split("-").filter(Boolean);
   if (lang === "ja") return moraeOf(word.replace(/[-.,!?;:"“”()「」、。]/g, ""));
+  // Chinese: a character to a note, and a word in Latin letters among them as English
+  if (lang === "zh" && [...word].some(isHan)) {
+    const out: string[] = [];
+    for (const run of word.replace(/[-.,!?;:"“”()「」、。，！？；：…]/g, "").match(/\p{Script=Han}|[^\p{Script=Han}]+/gu) ?? [])
+      out.push(...(isHan(run) ? [run] : pieces(run, "en")));
+    return out;
+  }
   const clean = word.replace(/[^\p{L}\p{N}'’]/gu, "");
   if (!clean) return [];
   try {
@@ -55,7 +63,7 @@ function pieces(word: string, lang: "en" | "ja"): string[] {
 }
 
 /** lyrics → lines of words of pieces */
-export function unitsOf(text: string, lang: "en" | "ja"): string[][][] {
+export function unitsOf(text: string, lang: Lang): string[][][] {
   return text
     .split(/\r?\n/)
     .map((l) => l.trim())
