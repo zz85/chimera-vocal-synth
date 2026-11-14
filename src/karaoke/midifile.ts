@@ -38,6 +38,8 @@ export interface MidiFile {
   /** the program each channel starts with (its first program change), -1: none */
   programs: number[];
   duration: number;
+  /** the encoding its text events were read in (textEncoding) */
+  encoding: string;
 }
 
 interface RawEvent {
@@ -50,13 +52,87 @@ interface RawEvent {
   metaData?: Uint8Array;
 }
 
-/** text bytes: UTF-8 where they read as such, else Latin-1 (most old .kar files) */
-function decodeText(b: Uint8Array): string {
+const latin1 = (b: Uint8Array) => Array.from(b, (c) => String.fromCharCode(c)).join("");
+
+/** a decoder for the encoding, or null where the runtime lacks it */
+function decoder(label: string): TextDecoder | null {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(b);
+    return new TextDecoder(label);
   } catch {
-    return Array.from(b, (c) => String.fromCharCode(c)).join("");
+    return null;
   }
+}
+
+/** how many characters the encoding can't read in the texts (U+FFFD), or Infinity without it */
+const unread = (label: string, all: Uint8Array[]) => {
+  const dec = decoder(label);
+  if (!dec) return Infinity;
+  let n = 0;
+  for (const b of all) for (const c of dec.decode(b)) if (c === "\ufffd") n++;
+  return n;
+};
+
+/**
+ * The encoding of a file's text events, chosen once for the whole file, so a character split
+ * across two events still reads: UTF-8 where every event reads as UTF-8; else, where its high
+ * bytes pair up as double-byte characters, Shift_JIS (Japanese), Big5 (traditional Chinese) or
+ * GBK (simplified Chinese); else Windows-1252, the Latin-1 most old .kar files are in.
+ *  - Shift_JIS puts its kana, punctuation, full-width letters and most used kanji on first bytes
+ *    0x81-0x9F, where Big5 and GB2312 have no characters. Windows-1252 has its curly quotes and
+ *    dashes there, but between the letters and words of a phrase ("don\x92t").
+ *  - Accented letters are high bytes inside words ("Tr\xe4ume", "cora\xe7\xe3o"), with a letter
+ *    before them, and a handful of them make few pairs on few first bytes; CJK lyrics make tens
+ *    of pairs on many first bytes, after spaces, punctuation or each other.
+ *  - Big5 and GBK read many of the same bytes. Big5 puts about two of every five common
+ *    characters' second byte in 0x40-0x7E, which GB2312's common characters never use, so a
+ *    file whose pairs often do is Big5.
+ */
+export function textEncoding(all: Uint8Array[]): string {
+  if (unread("utf-8", all) === 0) return "utf-8";
+  const letter = (c: number | undefined) => c !== undefined && ((c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a));
+  let pairs = 0, low = 0, high = 0, sjisLead = 0, accents = 0, quotes = 0;
+  const leads = new Set<number>();
+  let trail = -1;
+  // the events run on into each other here: a .kar file splits words into syllables ("can",
+  // "\x92t"), so a byte's neighbours are often in the next or the last event
+  const b = new Uint8Array(all.reduce((n, e) => n + e.length, 0));
+  all.reduce((at, e) => (b.set(e, at), at + e.length), 0);
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] < 0x81 || b[i] > 0xfe || i + 1 >= b.length) continue;
+    pairs++;
+    leads.add(b[i]);
+    // a letter of a word before it, but not a .kar tag's ("@T")
+    if (b[i] >= 0xc0 && letter(b[i - 1]) && b[i - 2] !== 0x40) accents++;
+    if (b[i + 1] >= 0x40 && b[i + 1] <= 0x7e) low++;
+    if (b[i + 1] >= 0x80) high++;
+    if (b[i] <= 0x9f) sjisLead++;
+    // Windows-1252's apostrophe and dashes inside a phrase ("don\x92t", "word\x97 word"),
+    // after a letter that isn't the second byte of a character before (full-width "\x82\x73")
+    if (b[i] <= 0x9f && letter(b[i - 1]) && trail !== i - 1 && (letter(b[i + 1]) || b[i + 1] === 0x20)) quotes++;
+    trail = ++i;
+  }
+  // an encoding reads the file where it reads all but a few of its characters; Shift_JIS files
+  // also use vendor characters the standard table lacks (box drawing in row 0x86)
+  const reads = (label: string, share = 0.03) => unread(label, all) <= Math.max(2, share * pairs);
+  // (two in five: Shift_JIS's half-width katakana are single bytes, which shift the pairing)
+  if (sjisLead >= 8 && sjisLead / pairs > 0.4 && quotes / sjisLead < 0.3 && reads("shift_jis", 0.35)) return "shift_jis";
+  if (pairs < 16 || leads.size < 6 || high / pairs < 0.3 || accents / pairs > 0.2) return "windows-1252";
+  if (reads("shift_jis")) {
+    const text = all.map((b) => decoder("shift_jis")!.decode(b)).join("");
+    const wide = [...text].filter((c) => c.charCodeAt(0) > 0xff).length;
+    const kana = [...text].filter((c) => /[\u3040-\u30ff]/.test(c)).length;
+    if (wide && kana / wide > 0.2) return "shift_jis";
+  }
+  const big5 = reads("big5"), gbk = reads("gbk");
+  if (big5 && (!gbk || low / pairs > 0.15)) return "big5";
+  if (gbk) return "gbk";
+  return "windows-1252";
+}
+
+function decoderFor(encoding: string): (b: Uint8Array) => string {
+  const dec = decoder(encoding);
+  if (!dec) return latin1;
+  return (b) => dec.decode(b);
 }
 
 export function parseMidi(buf: ArrayBuffer | Uint8Array): MidiFile {
@@ -84,7 +160,7 @@ export function parseMidi(buf: ArrayBuffer | Uint8Array): MidiFile {
   p = hstart + hlen;
   if (division & 0x8000) throw new Error("SMPTE time division is not supported");
   const events: RawEvent[] = [];
-  const trackNames: string[] = [];
+  const trackNameBytes: Uint8Array[] = [];
   let order = 0;
   for (let tr = 0; tr < ntracks && p < d.length; tr++) {
     const id = str4();
@@ -116,7 +192,7 @@ export function parseMidi(buf: ArrayBuffer | Uint8Array): MidiFile {
         const md = d.subarray(p, p + l);
         p += l;
         if (type === 0x2f) break;
-        if (type === 0x03 && trackNames[tr] === undefined) trackNames[tr] = decodeText(md).trim();
+        if (type === 0x03 && trackNameBytes[tr] === undefined) trackNameBytes[tr] = md;
         events.push({ tick, track: tr, order: order++, status, data: [], meta: type, metaData: md });
       } else if (status === 0xf0 || status === 0xf7) {
         p += vlq();
@@ -132,6 +208,11 @@ export function parseMidi(buf: ArrayBuffer | Uint8Array): MidiFile {
     p = end;
   }
   events.sort((a, b) => a.tick - b.tick || a.order - b.order);
+  // one encoding for every text event of the file, so a character isn't read alone
+  const encoding = textEncoding(events.filter((e) => e.meta !== undefined && e.meta >= 0x01 && e.meta <= 0x07 && e.metaData).map((e) => e.metaData!));
+  const decodeText = decoderFor(encoding);
+  const trackNames: string[] = [];
+  trackNameBytes.forEach((b, i) => (trackNames[i] = decodeText(b).trim()));
 
   // ticks to seconds through the tempo changes
   let tempo = 500000;
@@ -189,7 +270,7 @@ export function parseMidi(buf: ArrayBuffer | Uint8Array): MidiFile {
     for (const c of controls) c.t = at(c.t);
     end = at(end);
   }
-  return { notes, texts, controls, trackNames, programs, duration: end };
+  return { notes, texts, controls, trackNames, programs, duration: end, encoding };
 }
 
 /** the General MIDI instrument of each program number */
